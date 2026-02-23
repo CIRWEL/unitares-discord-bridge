@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import discord
 
 from bridge.mcp_client import AnimaClient
+from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -85,8 +86,15 @@ class LumenPoller:
 
     async def start(self) -> None:
         """Spawn the sensor and drawing poll loops."""
-        self._sensor_task = asyncio.create_task(self._sensor_loop())
-        self._drawing_task = asyncio.create_task(self._drawing_loop())
+        # Seed last drawing from gallery to avoid posting stale art on restart
+        try:
+            gallery = await self.anima.fetch_gallery(limit=1)
+            if gallery and isinstance(gallery, list) and gallery:
+                self._last_drawing = gallery[0].get("filename")
+        except Exception as exc:
+            log.warning("Failed to seed last drawing from gallery: %s", exc)
+        self._sensor_task = create_logged_task(self._sensor_loop(), name="lumen-sensor")
+        self._drawing_task = create_logged_task(self._drawing_loop(), name="lumen-drawing")
 
     async def stop(self) -> None:
         """Cancel both background tasks."""
@@ -112,6 +120,14 @@ class LumenPoller:
                         await self.sensor_channel.send(embed=embed)
                         self._was_offline = True
                 else:
+                    if self._was_offline:
+                        recovery = discord.Embed(
+                            title="Lumen Online",
+                            colour=discord.Colour.green(),
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        recovery.description = "Lumen's sensor interface is reachable again."
+                        await self.sensor_channel.send(embed=recovery)
                     self._was_offline = False
                     embed = build_sensor_embed(state)
                     await self.sensor_channel.send(embed=embed)

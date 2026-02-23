@@ -11,6 +11,7 @@ import discord
 
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient
+from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ class PollManager:
 
     async def start(self) -> None:
         """Start the background expiry-check loop."""
-        self._expiry_task = asyncio.create_task(self._expiry_loop())
+        self._expiry_task = create_logged_task(self._expiry_loop(), name="poll-expiry")
 
     async def stop(self) -> None:
         """Cancel the expiry loop."""

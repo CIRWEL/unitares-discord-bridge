@@ -11,6 +11,7 @@ from bridge.cache import BridgeCache
 from bridge.embeds import event_to_embed, is_critical_event
 from bridge.mcp_client import GovernanceClient
 from bridge.resonance import CIRS_EVENT_TYPES
+from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -42,19 +43,22 @@ class EventPoller:
         self.audit_channel = audit_channel
         self.guild = guild
         self._task: asyncio.Task | None = None
+        self._send_task: asyncio.Task | None = None
+        self._gov_alert_sent: bool = False
         self._message_queue: asyncio.Queue[tuple[discord.TextChannel, discord.Embed]] = (
             asyncio.Queue(maxsize=100)
         )
 
     async def start(self) -> None:
         """Spawn the poll and send loops as background tasks."""
-        self._task = asyncio.create_task(self._poll_loop())
-        asyncio.create_task(self._send_loop())
+        self._task = create_logged_task(self._poll_loop(), name="event-poll")
+        self._send_task = create_logged_task(self._send_loop(), name="event-send")
 
     async def stop(self) -> None:
-        """Cancel the poll loop task."""
-        if self._task:
-            self._task.cancel()
+        """Cancel both background tasks."""
+        for task in (self._task, self._send_task):
+            if task:
+                task.cancel()
 
     async def _poll_loop(self) -> None:
         while True:
@@ -93,12 +97,15 @@ class EventPoller:
                 if events:
                     last_id = max(e.get("event_id", 0) for e in events)
                     await self.cache.set_event_cursor(last_id)
-                if self.gov.consecutive_failures == 3:
+                if self.gov.consecutive_failures >= 3 and not self._gov_alert_sent:
+                    self._gov_alert_sent = True
                     warn = discord.Embed(
                         title="Governance MCP Unreachable",
                         colour=discord.Colour.dark_red(),
                     )
                     await self._message_queue.put((self.alerts_channel, warn))
+                elif self.gov.consecutive_failures == 0:
+                    self._gov_alert_sent = False
             except Exception as exc:
                 log.error("Event poll error: %s", exc)
             await asyncio.sleep(self.interval)

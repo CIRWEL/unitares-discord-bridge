@@ -242,6 +242,7 @@ def setup_commands(
 
     @tree.command(name="resume", description="Resume a paused agent")
     @app_commands.describe(agent="Agent ID to resume")
+    @app_commands.checks.has_role("governance-council")
     async def cmd_resume(interaction: discord.Interaction, agent: str) -> None:
         await interaction.response.defer()
         try:
@@ -262,6 +263,24 @@ def setup_commands(
             log.error("/resume error: %s", exc)
             await interaction.followup.send(
                 embed=_error_embed(f"Resume failed for '{agent}'."),
+            )
+
+    @cmd_resume.error
+    async def cmd_resume_error(
+        interaction: discord.Interaction, error: app_commands.AppCommandError,
+    ) -> None:
+        if isinstance(error, app_commands.MissingRole):
+            await interaction.response.send_message(
+                embed=_error_embed(
+                    "You need the **governance-council** role to resume agents."
+                ),
+                ephemeral=True,
+            )
+        else:
+            log.error("/resume unexpected error: %s", error)
+            await interaction.response.send_message(
+                embed=_error_embed("An unexpected error occurred."),
+                ephemeral=True,
             )
 
     @tree.command(name="lumen", description="Current Lumen state and sensors")

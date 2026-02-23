@@ -147,7 +147,42 @@ async def on_ready():
     log.info("All systems ready — events, HUD, presence, Lumen, dialectic, knowledge, commands active")
 
 
+@bot.event
+async def on_close():
+    """Graceful shutdown: stop all background tasks and close the cache."""
+    log.info("Shutting down bridge...")
+
+    # Stop all background pollers/syncs
+    for name, component in [
+        ("event_poller", event_poller),
+        ("hud_updater", hud_updater),
+        ("presence_manager", presence_manager),
+        ("lumen_poller", lumen_poller),
+        ("dialectic_sync", dialectic_sync),
+        ("knowledge_sync", knowledge_sync),
+        ("poll_manager", poll_manager),
+    ]:
+        if component is not None:
+            try:
+                await component.stop()
+                log.info("Stopped %s", name)
+            except Exception as exc:
+                log.warning("Error stopping %s: %s", name, exc)
+
+    # Close the SQLite cache
+    if cache is not None:
+        try:
+            await cache.__aexit__(None, None, None)
+            log.info("Cache closed")
+        except Exception as exc:
+            log.warning("Error closing cache: %s", exc)
+
+    log.info("Shutdown complete")
+
+
 def main():
+    if not DISCORD_TOKEN:
+        raise ValueError("DISCORD_BOT_TOKEN environment variable is required")
     setup_commands(bot, gov_client, anima_client)
     bot.run(DISCORD_TOKEN)
 

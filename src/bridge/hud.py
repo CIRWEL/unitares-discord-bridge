@@ -11,6 +11,7 @@ import discord
 
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient
+from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class HUDUpdater:
             await self.cache.set_hud_message(self.hud_channel.id, self._message.id)
             log.info("Created new HUD message %d", self._message.id)
 
-        self._task = asyncio.create_task(self._update_loop())
+        self._task = create_logged_task(self._update_loop(), name="hud-update")
 
     async def stop(self) -> None:
         """Cancel the update loop task."""

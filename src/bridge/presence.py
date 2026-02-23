@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import discord
+
+from bridge.tasks import create_logged_task
+
+log = logging.getLogger(__name__)
 
 
 _VERDICT_ROLE_MAP: dict[str, str] = {
@@ -44,7 +49,7 @@ class PresenceManager:
 
     async def start(self) -> None:
         """Start the background cleanup loop."""
-        self._task = asyncio.create_task(self._cleanup_loop())
+        self._task = create_logged_task(self._cleanup_loop(), name="presence-cleanup")
 
     async def stop(self) -> None:
         """Cancel the background cleanup loop."""
@@ -55,6 +60,7 @@ class PresenceManager:
         """Called by event poller when agent_new fires."""
         agent_id = event.get("agent_id", "")
         agent_name = event.get("agent_name", "unknown")
+        log.info("New agent event: %s (%s)", agent_name, agent_id[:8])
 
         # Announce in lobby
         embed = discord.Embed(
@@ -75,6 +81,12 @@ class PresenceManager:
                     topic=f"Check-ins for {agent_name} ({agent_id[:8]}...)",
                 )
                 await self.cache.set_agent_channel(agent_id, ch.id)
+                log.info("Created channel #agent-%s for %s", agent_name[:30], agent_id[:8])
+            else:
+                log.warning(
+                    "Agent channel limit (%d) reached, skipping channel for %s",
+                    self.MAX_AGENT_CHANNELS, agent_name,
+                )
 
     async def post_checkin(self, agent_id: str, checkin_data: dict) -> None:
         """Post a check-in embed to the agent's channel."""

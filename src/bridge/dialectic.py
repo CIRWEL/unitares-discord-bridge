@@ -10,6 +10,7 @@ import discord
 
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient
+from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class DialecticSync:
 
     async def start(self) -> None:
         """Spawn the poll loop."""
-        self._task = asyncio.create_task(self._poll_loop())
+        self._task = create_logged_task(self._poll_loop(), name="dialectic-sync")
 
     async def stop(self) -> None:
         """Cancel the background task."""
