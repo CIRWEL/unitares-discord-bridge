@@ -1,0 +1,146 @@
+"""Lumen poller — sensor embeds, drawing detection, offline alerts."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import logging
+from datetime import datetime, timezone
+
+import discord
+
+from bridge.mcp_client import AnimaClient
+
+log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Embed builders
+# ---------------------------------------------------------------------------
+
+def build_sensor_embed(state: dict) -> discord.Embed:
+    """Build a Discord embed from Lumen's sensor/anima state."""
+    neural = state.get("neural", {})
+    embed = discord.Embed(
+        title="Lumen Environment",
+        colour=discord.Colour.teal(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.description = (
+        f"**Temp:** {state.get('ambient_temp', '?')}\u00b0C  "
+        f"**Humidity:** {state.get('humidity', '?')}%\n"
+        f"**Pressure:** {state.get('pressure', '?')} hPa  "
+        f"**Light:** {state.get('light', '?')} lux\n"
+        f"**CPU:** {state.get('cpu_temp', '?')}\u00b0C  "
+        f"**Memory:** {state.get('memory_percent', '?')}%\n\n"
+        f"**Neural:** \u03b4={neural.get('delta', 0):.1f} \u03b8={neural.get('theta', 0):.1f} "
+        f"\u03b1={neural.get('alpha', 0):.1f} \u03b2={neural.get('beta', 0):.1f} \u03b3={neural.get('gamma', 0):.1f}"
+    )
+    embed.add_field(name="Warmth", value=f"{state.get('warmth', 0):.2f}", inline=True)
+    embed.add_field(name="Clarity", value=f"{state.get('clarity', 0):.2f}", inline=True)
+    embed.add_field(name="Stability", value=f"{state.get('stability', 0):.2f}", inline=True)
+    embed.add_field(name="Presence", value=f"{state.get('presence', 0):.2f}", inline=True)
+    embed.set_footer(text="Colorado")
+    return embed
+
+
+def build_drawing_embed(drawing: dict) -> discord.Embed:
+    """Build a Discord embed for a completed Lumen drawing."""
+    era = drawing.get("era", "unknown")
+    manual = drawing.get("manual", False)
+    embed = discord.Embed(
+        title="Drawing Complete",
+        colour=discord.Colour.purple(),
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.description = f"Era: **{era}**"
+    embed.add_field(name="Manual", value="Yes" if manual else "No", inline=True)
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# Lumen Poller
+# ---------------------------------------------------------------------------
+
+class LumenPoller:
+    """Background tasks that poll Lumen's sensor state and drawing gallery."""
+
+    def __init__(
+        self,
+        anima_client: AnimaClient,
+        stream_channel: discord.TextChannel,
+        art_channel: discord.TextChannel,
+        sensor_channel: discord.TextChannel,
+        sensor_interval: int = 300,
+    ) -> None:
+        self.anima = anima_client
+        self.stream_channel = stream_channel
+        self.art_channel = art_channel
+        self.sensor_channel = sensor_channel
+        self.sensor_interval = sensor_interval
+        self._last_drawing: str | None = None
+        self._was_offline: bool = False
+        self._sensor_task: asyncio.Task | None = None
+        self._drawing_task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        """Spawn the sensor and drawing poll loops."""
+        self._sensor_task = asyncio.create_task(self._sensor_loop())
+        self._drawing_task = asyncio.create_task(self._drawing_loop())
+
+    async def stop(self) -> None:
+        """Cancel both background tasks."""
+        for task in (self._sensor_task, self._drawing_task):
+            if task:
+                task.cancel()
+
+    # -- Sensor loop --------------------------------------------------------
+
+    async def _sensor_loop(self) -> None:
+        while True:
+            try:
+                state = await self.anima.fetch_state()
+                if state is None:
+                    # Lumen offline
+                    if not self._was_offline:
+                        embed = discord.Embed(
+                            title="Lumen Offline",
+                            colour=discord.Colour.dark_red(),
+                            timestamp=datetime.now(timezone.utc),
+                        )
+                        embed.description = "Unable to reach Lumen's sensor interface."
+                        await self.sensor_channel.send(embed=embed)
+                        self._was_offline = True
+                else:
+                    self._was_offline = False
+                    embed = build_sensor_embed(state)
+                    await self.sensor_channel.send(embed=embed)
+            except Exception as exc:
+                log.error("Sensor loop error: %s", exc)
+            await asyncio.sleep(self.sensor_interval)
+
+    # -- Drawing loop -------------------------------------------------------
+
+    async def _drawing_loop(self) -> None:
+        while True:
+            try:
+                gallery = await self.anima.fetch_gallery(limit=1)
+                if gallery and isinstance(gallery, list) and len(gallery) > 0:
+                    newest = gallery[0]
+                    filename = newest.get("filename", "")
+                    if filename and filename != self._last_drawing:
+                        self._last_drawing = filename
+                        # Fetch the actual image bytes
+                        image_data = await self.anima.fetch_drawing_image(filename)
+                        embed = build_drawing_embed(newest)
+                        if image_data:
+                            file = discord.File(
+                                io.BytesIO(image_data), filename=filename,
+                            )
+                            embed.set_image(url=f"attachment://{filename}")
+                            await self.art_channel.send(embed=embed, file=file)
+                        else:
+                            await self.art_channel.send(embed=embed)
+            except Exception as exc:
+                log.error("Drawing loop error: %s", exc)
+            await asyncio.sleep(60)

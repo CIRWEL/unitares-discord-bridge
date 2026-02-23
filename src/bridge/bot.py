@@ -7,7 +7,7 @@ from discord.ext import commands
 
 from bridge.config import (
     DISCORD_TOKEN, GUILD_ID, GOVERNANCE_URL, ANIMA_URL,
-    EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, DB_PATH,
+    EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL, DB_PATH,
 )
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient, AnimaClient
@@ -15,6 +15,7 @@ from bridge.server_setup import ensure_server_structure
 from bridge.event_poller import EventPoller
 from bridge.hud import HUDUpdater
 from bridge.presence import PresenceManager
+from bridge.lumen import LumenPoller
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,11 +34,12 @@ cache: BridgeCache | None = None
 event_poller: EventPoller | None = None
 hud_updater: HUDUpdater | None = None
 presence_manager: PresenceManager | None = None
+lumen_poller: LumenPoller | None = None
 
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, presence_manager
+    global cache, event_poller, hud_updater, presence_manager, lumen_poller
 
     log.info("Bridge online as %s", bot.user)
     guild = bot.get_guild(GUILD_ID)
@@ -83,7 +85,18 @@ async def on_ready():
         await hud_updater.start()
         log.info("HUD updater started")
 
-    log.info("Phase 2 ready — events flowing, HUD updating, presence active")
+    # Start the Lumen poller if all three channels exist
+    stream_ch = channels.get("lumen-stream")
+    art_ch = channels.get("lumen-art")
+    sensor_ch = channels.get("lumen-sensors")
+    if stream_ch and art_ch and sensor_ch:
+        lumen_poller = LumenPoller(
+            anima_client, stream_ch, art_ch, sensor_ch, SENSOR_POLL_INTERVAL,
+        )
+        await lumen_poller.start()
+        log.info("Lumen poller started")
+
+    log.info("Phase 3 ready — events, HUD, presence, Lumen poller active")
 
 
 def main():
