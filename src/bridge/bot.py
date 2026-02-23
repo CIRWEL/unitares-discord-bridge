@@ -17,6 +17,10 @@ from bridge.hud import HUDUpdater
 from bridge.presence import PresenceManager
 from bridge.lumen import LumenPoller
 from bridge.dialectic import DialecticSync
+from bridge.knowledge import KnowledgeSync
+from bridge.commands import setup_commands
+from bridge.polls import PollManager
+from bridge.resonance import ResonanceTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,11 +41,14 @@ hud_updater: HUDUpdater | None = None
 presence_manager: PresenceManager | None = None
 lumen_poller: LumenPoller | None = None
 dialectic_sync: DialecticSync | None = None
+knowledge_sync: KnowledgeSync | None = None
+poll_manager: PollManager | None = None
+resonance_tracker: ResonanceTracker | None = None
 
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, presence_manager, lumen_poller, dialectic_sync
+    global cache, event_poller, hud_updater, presence_manager, lumen_poller, dialectic_sync, knowledge_sync, poll_manager, resonance_tracker
 
     log.info("Bridge online as %s", bot.user)
     guild = bot.get_guild(GUILD_ID)
@@ -67,6 +74,20 @@ async def on_ready():
         await presence_manager.start()
         log.info("Presence manager started")
 
+    # Set up poll manager for governance votes
+    audit_ch = channels.get("audit-log")
+    poll_manager = PollManager(gov_client, cache, audit_channel=audit_ch)
+    poll_manager.bot = bot
+    if audit_ch:
+        await poll_manager.start()
+        log.info("Poll manager started")
+
+    # Set up resonance tracker if #resonance channel exists
+    resonance_ch = channels.get("resonance")
+    if resonance_ch:
+        resonance_tracker = ResonanceTracker(resonance_ch)
+        log.info("Resonance tracker ready")
+
     # Start the event poller if both channels exist
     events_ch = channels.get("events")
     alerts_ch = channels.get("alerts")
@@ -74,6 +95,10 @@ async def on_ready():
         event_poller = EventPoller(
             gov_client, cache, events_ch, alerts_ch, EVENT_POLL_INTERVAL,
             presence_manager=presence_manager,
+            poll_manager=poll_manager,
+            resonance_tracker=resonance_tracker,
+            audit_channel=audit_ch,
+            guild=guild,
         )
         await event_poller.start()
         log.info("Event poller started")
@@ -105,10 +130,25 @@ async def on_ready():
         await dialectic_sync.start()
         log.info("Dialectic sync started")
 
-    log.info("Phase 4 ready — events, HUD, presence, Lumen, dialectic sync active")
+    # Start the knowledge sync if the discoveries forum exists
+    discoveries_ch = channels.get("discoveries")
+    if discoveries_ch:
+        knowledge_sync = KnowledgeSync(gov_client, cache, discoveries_ch)
+        await knowledge_sync.start()
+        log.info("Knowledge sync started")
+
+    # Sync the slash command tree
+    try:
+        await bot.tree.sync()
+        log.info("Slash command tree synced")
+    except Exception as exc:
+        log.error("Failed to sync command tree: %s", exc)
+
+    log.info("All systems ready — events, HUD, presence, Lumen, dialectic, knowledge, commands active")
 
 
 def main():
+    setup_commands(bot, gov_client, anima_client)
     bot.run(DISCORD_TOKEN)
 
 

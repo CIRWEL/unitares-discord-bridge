@@ -10,6 +10,7 @@ import discord
 from bridge.cache import BridgeCache
 from bridge.embeds import event_to_embed, is_critical_event
 from bridge.mcp_client import GovernanceClient
+from bridge.resonance import CIRS_EVENT_TYPES
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +26,10 @@ class EventPoller:
         alerts_channel: discord.TextChannel,
         interval: int = 10,
         presence_manager=None,
+        poll_manager=None,
+        resonance_tracker=None,
+        audit_channel: discord.TextChannel | None = None,
+        guild: discord.Guild | None = None,
     ) -> None:
         self.gov = gov_client
         self.cache = cache
@@ -32,6 +37,10 @@ class EventPoller:
         self.alerts_channel = alerts_channel
         self.interval = interval
         self.presence = presence_manager
+        self.poll_manager = poll_manager
+        self.resonance = resonance_tracker
+        self.audit_channel = audit_channel
+        self.guild = guild
         self._task: asyncio.Task | None = None
         self._message_queue: asyncio.Queue[tuple[discord.TextChannel, discord.Embed]] = (
             asyncio.Queue(maxsize=100)
@@ -57,11 +66,30 @@ class EventPoller:
                     await self._message_queue.put((self.events_channel, embed))
                     if is_critical_event(event):
                         await self._message_queue.put((self.alerts_channel, embed))
+                    # Trigger poll for pause/reject verdicts
+                    if (
+                        self.poll_manager
+                        and self.audit_channel
+                        and self.guild
+                        and event.get("type") == "verdict_change"
+                        and event.get("to") in ("pause", "reject")
+                    ):
+                        try:
+                            await self.poll_manager.handle_verdict_event(
+                                event, self.alerts_channel, self.audit_channel, self.guild,
+                            )
+                        except Exception as e:
+                            log.warning("Poll manager error: %s", e)
                     if self.presence and event.get("type") == "agent_new":
                         try:
                             await self.presence.handle_new_agent(event)
                         except Exception as e:
                             log.warning("Presence handler error: %s", e)
+                    if self.resonance and event.get("type") in CIRS_EVENT_TYPES:
+                        try:
+                            await self.resonance.handle_event(event)
+                        except Exception as e:
+                            log.warning("Resonance handler error: %s", e)
                 if events:
                     last_id = max(e.get("event_id", 0) for e in events)
                     await self.cache.set_event_cursor(last_id)
