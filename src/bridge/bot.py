@@ -16,6 +16,7 @@ from bridge.event_poller import EventPoller
 from bridge.hud import HUDUpdater
 from bridge.presence import PresenceManager
 from bridge.lumen import LumenPoller
+from bridge.dialectic import DialecticSync
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,11 +36,12 @@ event_poller: EventPoller | None = None
 hud_updater: HUDUpdater | None = None
 presence_manager: PresenceManager | None = None
 lumen_poller: LumenPoller | None = None
+dialectic_sync: DialecticSync | None = None
 
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, presence_manager, lumen_poller
+    global cache, event_poller, hud_updater, presence_manager, lumen_poller, dialectic_sync
 
     log.info("Bridge online as %s", bot.user)
     guild = bot.get_guild(GUILD_ID)
@@ -96,7 +98,14 @@ async def on_ready():
         await lumen_poller.start()
         log.info("Lumen poller started")
 
-    log.info("Phase 3 ready — events, HUD, presence, Lumen poller active")
+    # Start the dialectic sync if the forum channel exists
+    forum_ch = channels.get("dialectic-forum")
+    if forum_ch:
+        dialectic_sync = DialecticSync(gov_client, cache, forum_ch)
+        await dialectic_sync.start()
+        log.info("Dialectic sync started")
+
+    log.info("Phase 4 ready — events, HUD, presence, Lumen, dialectic sync active")
 
 
 def main():
