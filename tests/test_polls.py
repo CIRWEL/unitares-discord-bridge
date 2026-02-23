@@ -1,6 +1,7 @@
 """Tests for the governance poll manager."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +13,7 @@ from bridge.polls import (
     PAUSE_OPTIONS,
     REJECT_OPTIONS,
     PollManager,
+    _parse_tool_result,
     build_audit_embed,
     build_poll_embed,
     tally_votes,
@@ -270,14 +272,16 @@ async def test_resolve_poll_resume_calls_operator(cache):
 
 
 @pytest.mark.asyncio
-async def test_resolve_poll_hold_no_call(cache):
-    """When Hold wins (tie), no governance tool call is made."""
+async def test_resolve_poll_hold_with_human_votes(cache):
+    """When Hold wins with human votes, no governance action is taken."""
     async with cache:
         gov = MagicMock()
         gov.call_tool = AsyncMock()
 
         pm = PollManager(gov, cache)
-        pm._fetch_reaction_counts = AsyncMock(return_value={})  # No votes -> tie -> Hold
+        pm._fetch_reaction_counts = AsyncMock(
+            return_value={"\u23f8\ufe0f": 3, "\u2705": 1, "\U0001f504": 0}
+        )
 
         await cache.save_poll("p1", "agent-x", "pause", 111, 222, "2020-01-01T00:00:00+00:00")
         poll = (await cache.get_active_polls())[0]
@@ -332,10 +336,10 @@ async def test_resolve_poll_uphold_no_call(cache):
 
 @pytest.mark.asyncio
 async def test_resolve_poll_dialectic_action(cache):
-    """When Dialectic wins, action is dialectic_requested."""
+    """When Dialectic wins, request_dialectic_review is called."""
     async with cache:
         gov = MagicMock()
-        gov.call_tool = AsyncMock()
+        gov.call_tool = AsyncMock(return_value={"result": "ok"})
 
         pm = PollManager(gov, cache)
         pm._fetch_reaction_counts = AsyncMock(
@@ -348,7 +352,10 @@ async def test_resolve_poll_dialectic_action(cache):
 
         assert result["winner"] == "Dialectic"
         assert result["action_taken"] == "dialectic_requested"
-        gov.call_tool.assert_not_called()
+        gov.call_tool.assert_called_once_with(
+            "request_dialectic_review",
+            {"agent_id": "agent-x", "reason": "Autonomous poll resolution: pause with no human votes"},
+        )
 
 
 @pytest.mark.asyncio
@@ -375,15 +382,25 @@ async def test_resolve_poll_resume_failed(cache):
 # ---------------------------------------------------------------------------
 
 
+def _mcp_wrap(data: dict) -> dict:
+    """Wrap data in the MCP tool result envelope."""
+    return {"result": {"content": [{"text": json.dumps(data)}]}}
+
+
 @pytest.mark.asyncio
 async def test_check_expired_polls_resolves_expired(cache):
     """Polls past their expires_at get resolved."""
     async with cache:
         gov = MagicMock()
-        gov.call_tool = AsyncMock()
+        # Autonomous decision will call get_governance_metrics, then maybe
+        # request_dialectic_review if degraded
+        gov.call_tool = AsyncMock(side_effect=[
+            _mcp_wrap({"eisv": {"E": 0.3, "I": 0.2, "S": 1.5, "V": 0.1}}),
+            {"result": "ok"},  # dialectic request
+        ])
 
         pm = PollManager(gov, cache)
-        pm._fetch_reaction_counts = AsyncMock(return_value={})
+        pm._fetch_reaction_counts = AsyncMock(return_value={})  # Zero votes -> autonomous
         pm.audit_channel = MagicMock()
         pm.audit_channel.send = AsyncMock()
 
@@ -428,3 +445,165 @@ async def test_check_expired_polls_bad_date(cache):
 
         # Should be resolved due to bad date
         assert len(await cache.get_active_polls()) == 0
+
+
+# ---------------------------------------------------------------------------
+# Autonomous resolution (zero votes)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_autonomous_resolve_recovered_agent_resumes(cache):
+    """Zero votes + recovered EISV -> auto-resume."""
+    async with cache:
+        gov = MagicMock()
+        # First call: get_governance_metrics (from _autonomous_decision)
+        # Second call: operator_resume_agent (from _resolve_poll action)
+        gov.call_tool = AsyncMock(side_effect=[
+            _mcp_wrap({"eisv": {"E": 0.8, "I": 0.7, "S": 0.5, "V": 0.6}}),
+            {"result": "ok"},
+        ])
+
+        pm = PollManager(gov, cache)
+        pm._fetch_reaction_counts = AsyncMock(return_value={})  # Zero human votes
+
+        await cache.save_poll("p1", "agent-x", "pause", 111, 222, "2020-01-01T00:00:00+00:00")
+        poll = (await cache.get_active_polls())[0]
+        result = await pm._resolve_poll(poll)
+
+        assert result["winner"] == "Resume"
+        assert result["action_taken"] == "resumed"
+        # Second call should be operator_resume_agent
+        assert gov.call_tool.call_args_list[1][0] == (
+            "operator_resume_agent", {"agent_id": "agent-x"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_autonomous_resolve_degraded_agent_dialectic(cache):
+    """Zero votes + degraded EISV -> auto-request dialectic."""
+    async with cache:
+        gov = MagicMock()
+        # First call: get_governance_metrics (degraded)
+        # Second call: request_dialectic_review (from _resolve_poll action)
+        gov.call_tool = AsyncMock(side_effect=[
+            _mcp_wrap({"eisv": {"E": 0.2, "I": 0.3, "S": 1.5, "V": 0.1}}),
+            {"result": "ok"},
+        ])
+
+        pm = PollManager(gov, cache)
+        pm._fetch_reaction_counts = AsyncMock(return_value={})  # Zero votes
+
+        await cache.save_poll("p1", "agent-x", "pause", 111, 222, "2020-01-01T00:00:00+00:00")
+        poll = (await cache.get_active_polls())[0]
+        result = await pm._resolve_poll(poll)
+
+        assert result["winner"] == "Dialectic"
+        assert result["action_taken"] == "dialectic_requested"
+        assert gov.call_tool.call_args_list[1][0][0] == "request_dialectic_review"
+
+
+@pytest.mark.asyncio
+async def test_autonomous_resolve_reject_recovered_overrides(cache):
+    """Zero votes on reject poll + recovered EISV -> Override."""
+    async with cache:
+        gov = MagicMock()
+        gov.call_tool = AsyncMock(side_effect=[
+            _mcp_wrap({"eisv": {"E": 0.9, "I": 0.8, "S": 0.3, "V": 0.7}}),
+            {"result": "ok"},
+        ])
+
+        pm = PollManager(gov, cache)
+        pm._fetch_reaction_counts = AsyncMock(return_value={})
+
+        await cache.save_poll("p1", "agent-x", "reject", 111, 222, "2020-01-01T00:00:00+00:00")
+        poll = (await cache.get_active_polls())[0]
+        result = await pm._resolve_poll(poll)
+
+        assert result["winner"] == "Override"
+        assert result["action_taken"] == "resumed"
+
+
+@pytest.mark.asyncio
+async def test_autonomous_resolve_reject_degraded_investigates(cache):
+    """Zero votes on reject poll + degraded EISV -> Investigate."""
+    async with cache:
+        gov = MagicMock()
+        gov.call_tool = AsyncMock(side_effect=[
+            _mcp_wrap({"eisv": {"E": 0.1, "I": 0.1, "S": 2.0, "V": 0.0}}),
+            {"result": "ok"},
+        ])
+
+        pm = PollManager(gov, cache)
+        pm._fetch_reaction_counts = AsyncMock(return_value={})
+
+        await cache.save_poll("p1", "agent-x", "reject", 111, 222, "2020-01-01T00:00:00+00:00")
+        poll = (await cache.get_active_polls())[0]
+        result = await pm._resolve_poll(poll)
+
+        assert result["winner"] == "Investigate"
+        assert result["action_taken"] == "dialectic_requested"
+
+
+@pytest.mark.asyncio
+async def test_autonomous_resolve_metrics_failure_defaults_to_dialectic(cache):
+    """When EISV fetch fails during autonomous decision, fallback to dialectic."""
+    async with cache:
+        gov = MagicMock()
+        gov.call_tool = AsyncMock(side_effect=[
+            None,  # get_governance_metrics fails
+            {"result": "ok"},  # request_dialectic_review succeeds
+        ])
+
+        pm = PollManager(gov, cache)
+        pm._fetch_reaction_counts = AsyncMock(return_value={})
+
+        await cache.save_poll("p1", "agent-x", "pause", 111, 222, "2020-01-01T00:00:00+00:00")
+        poll = (await cache.get_active_polls())[0]
+        result = await pm._resolve_poll(poll)
+
+        # With empty EISV, E=0, I=0, S=999 -> not recovered -> dialectic
+        assert result["winner"] == "Dialectic"
+        assert result["action_taken"] == "dialectic_requested"
+
+
+@pytest.mark.asyncio
+async def test_human_votes_override_autonomous(cache):
+    """When humans vote, their decision wins even if autonomous would differ."""
+    async with cache:
+        gov = MagicMock()
+        gov.call_tool = AsyncMock()  # No calls expected (Hold doesn't call)
+
+        pm = PollManager(gov, cache)
+        # Humans voted for Hold
+        pm._fetch_reaction_counts = AsyncMock(
+            return_value={"\u2705": 1, "\u23f8\ufe0f": 5, "\U0001f504": 0}
+        )
+
+        await cache.save_poll("p1", "agent-x", "pause", 111, 222, "2020-01-01T00:00:00+00:00")
+        poll = (await cache.get_active_polls())[0]
+        result = await pm._resolve_poll(poll)
+
+        assert result["winner"] == "Hold"
+        assert result["action_taken"] == "held"
+        # No governance API calls made
+        gov.call_tool.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _parse_tool_result
+# ---------------------------------------------------------------------------
+
+
+def test_parse_tool_result_unwraps():
+    result = _mcp_wrap({"eisv": {"E": 0.8}})
+    parsed = _parse_tool_result(result)
+    assert parsed == {"eisv": {"E": 0.8}}
+
+
+def test_parse_tool_result_none():
+    assert _parse_tool_result(None) == {}
+
+
+def test_parse_tool_result_empty():
+    assert _parse_tool_result({"result": {}}) == {}

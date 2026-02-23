@@ -1,8 +1,14 @@
-"""Poll manager -- creates Discord reaction polls for governance verdicts."""
+"""Poll manager -- creates Discord reaction polls for governance verdicts.
+
+Polls give humans an override window.  When no humans vote, the bridge
+decides autonomously based on current EISV metrics rather than defaulting
+to the conservative option.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -169,6 +175,22 @@ def tally_votes(
 
 
 # ---------------------------------------------------------------------------
+# MCP response parsing
+# ---------------------------------------------------------------------------
+
+
+def _parse_tool_result(result: dict | None) -> dict | list:
+    """Unwrap the MCP tool result envelope."""
+    if result is None:
+        return {}
+    content = result.get("result", {}).get("content", [])
+    if content:
+        text = content[0].get("text", "{}")
+        return json.loads(text)
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # PollManager
 # ---------------------------------------------------------------------------
 
@@ -288,6 +310,10 @@ class PollManager:
     async def _resolve_poll(self, poll: dict) -> dict | None:
         """Tally votes on a poll message and take action.
 
+        When humans voted, their majority wins.  When no humans voted,
+        the bridge decides autonomously: fetch current EISV metrics and
+        auto-resume if recovered, otherwise request a dialectic review.
+
         Returns a poll_result dict on success, or None if resolution failed.
         """
         poll_id = poll["poll_id"]
@@ -297,8 +323,14 @@ class PollManager:
 
         # Fetch the message to read reactions
         reaction_counts = await self._fetch_reaction_counts(poll)
+        total_human_votes = sum(reaction_counts.values())
 
-        winner, vote_counts = tally_votes(reaction_counts, options)
+        if total_human_votes > 0:
+            # Humans voted -- honour their decision
+            winner, vote_counts = tally_votes(reaction_counts, options)
+        else:
+            # No humans voted -- decide autonomously via EISV
+            winner, vote_counts = await self._autonomous_decision(agent_id, verdict_type, options)
 
         # Determine action
         action_taken = "none"
@@ -307,8 +339,17 @@ class PollManager:
                 "operator_resume_agent", {"agent_id": agent_id},
             )
             action_taken = "resumed" if result else "resume_failed"
-        elif winner == "Dialectic":
-            action_taken = "dialectic_requested"
+        elif winner in ("Dialectic", "Investigate"):
+            try:
+                reason = f"Autonomous poll resolution: {verdict_type} with no human votes"
+                await self.gov.call_tool(
+                    "request_dialectic_review",
+                    {"agent_id": agent_id, "reason": reason},
+                )
+                action_taken = "dialectic_requested"
+            except Exception as exc:
+                log.warning("Dialectic request failed for %s: %s", agent_id, exc)
+                action_taken = "dialectic_request_failed"
         else:
             # Hold or Uphold -- no governance action needed
             action_taken = "held" if verdict_type == "pause" else "upheld"
@@ -327,6 +368,49 @@ class PollManager:
         await self.cache.resolve_poll(poll_id)
 
         return poll_result
+
+    async def _autonomous_decision(
+        self, agent_id: str, verdict_type: str, options: list[tuple[str, str]],
+    ) -> tuple[str, dict[str, int]]:
+        """Make an autonomous decision based on current EISV metrics.
+
+        Returns (winner_label, vote_counts) in the same format as tally_votes.
+        vote_counts will be all zeros (no human votes).
+        """
+        vote_counts = {label: 0 for _, label in options}
+
+        # Fetch current EISV
+        try:
+            metrics_result = await self.gov.call_tool(
+                "get_governance_metrics", {"agent_id": agent_id},
+            )
+            metrics = _parse_tool_result(metrics_result)
+            eisv = metrics.get("eisv", metrics)
+        except Exception as exc:
+            log.warning("Failed to fetch EISV for autonomous decision: %s", exc)
+            eisv = {}
+
+        e = eisv.get("E", 0)
+        i = eisv.get("I", 0)
+        s = eisv.get("S", 999)
+
+        # Agent recovered: E > 0.5, I > 0.5, S < 1.0 -> resume/override
+        if e > 0.5 and i > 0.5 and s < 1.0:
+            # First option is always the resume/override option
+            winner = options[0][1]
+            log.info(
+                "Autonomous decision for %s: %s (recovered: E=%.2f I=%.2f S=%.2f)",
+                agent_id[:8], winner, e, i, s,
+            )
+        else:
+            # Still degraded -> request dialectic (option index 2 for pause, 2 for reject)
+            winner = options[2][1]  # "Dialectic" or "Investigate"
+            log.info(
+                "Autonomous decision for %s: %s (degraded: E=%.2f I=%.2f S=%.2f)",
+                agent_id[:8], winner, e, i, s,
+            )
+
+        return winner, vote_counts
 
     async def _fetch_reaction_counts(self, poll: dict) -> dict[str, int]:
         """Fetch reaction counts from the Discord message.

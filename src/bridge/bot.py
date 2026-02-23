@@ -21,6 +21,7 @@ from bridge.knowledge import KnowledgeSync
 from bridge.commands import setup_commands
 from bridge.polls import PollManager
 from bridge.resonance import ResonanceTracker
+from bridge.autonomy import AutonomyEngine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,11 +45,12 @@ dialectic_sync: DialecticSync | None = None
 knowledge_sync: KnowledgeSync | None = None
 poll_manager: PollManager | None = None
 resonance_tracker: ResonanceTracker | None = None
+autonomy_engine: AutonomyEngine | None = None
 
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, presence_manager, lumen_poller, dialectic_sync, knowledge_sync, poll_manager, resonance_tracker
+    global cache, event_poller, hud_updater, presence_manager, lumen_poller, dialectic_sync, knowledge_sync, poll_manager, resonance_tracker, autonomy_engine
 
     log.info("Bridge online as %s", bot.user)
     guild = bot.get_guild(GUILD_ID)
@@ -88,9 +90,19 @@ async def on_ready():
         resonance_tracker = ResonanceTracker(resonance_ch)
         log.info("Resonance tracker ready")
 
+    # Set up autonomy engine for autonomous governance decisions
+    alerts_ch = channels.get("alerts")
+    if alerts_ch:
+        autonomy_engine = AutonomyEngine(
+            gov_client, cache,
+            alerts_channel=alerts_ch,
+            audit_channel=audit_ch,
+        )
+        await autonomy_engine.start()
+        log.info("Autonomy engine started")
+
     # Start the event poller if both channels exist
     events_ch = channels.get("events")
-    alerts_ch = channels.get("alerts")
     if events_ch and alerts_ch:
         event_poller = EventPoller(
             gov_client, cache, events_ch, alerts_ch, EVENT_POLL_INTERVAL,
@@ -99,6 +111,7 @@ async def on_ready():
             resonance_tracker=resonance_tracker,
             audit_channel=audit_ch,
             guild=guild,
+            autonomy_engine=autonomy_engine,
         )
         await event_poller.start()
         log.info("Event poller started")
@@ -144,7 +157,7 @@ async def on_ready():
     except Exception as exc:
         log.error("Failed to sync command tree: %s", exc)
 
-    log.info("All systems ready — events, HUD, presence, Lumen, dialectic, knowledge, commands active")
+    log.info("All systems ready — events, HUD, presence, Lumen, dialectic, knowledge, autonomy, commands active")
 
 
 @bot.event
@@ -161,6 +174,7 @@ async def on_close():
         ("dialectic_sync", dialectic_sync),
         ("knowledge_sync", knowledge_sync),
         ("poll_manager", poll_manager),
+        ("autonomy_engine", autonomy_engine),
     ]:
         if component is not None:
             try:

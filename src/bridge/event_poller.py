@@ -31,6 +31,7 @@ class EventPoller:
         resonance_tracker=None,
         audit_channel: discord.TextChannel | None = None,
         guild: discord.Guild | None = None,
+        autonomy_engine=None,
     ) -> None:
         self.gov = gov_client
         self.cache = cache
@@ -42,6 +43,7 @@ class EventPoller:
         self.resonance = resonance_tracker
         self.audit_channel = audit_channel
         self.guild = guild
+        self.autonomy = autonomy_engine
         self._task: asyncio.Task | None = None
         self._send_task: asyncio.Task | None = None
         self._gov_alert_sent: bool = False
@@ -84,6 +86,32 @@ class EventPoller:
                             )
                         except Exception as e:
                             log.warning("Poll manager error: %s", e)
+                    # Autonomy engine: auto-dialectic on verdict change
+                    if (
+                        self.autonomy
+                        and event.get("type") == "verdict_change"
+                        and event.get("to") in ("pause", "reject")
+                    ):
+                        try:
+                            await self.autonomy.handle_verdict_event(event)
+                        except Exception as e:
+                            log.warning("Autonomy verdict handler error: %s", e)
+                    # Autonomy engine: auto-dialectic on critical drift
+                    if (
+                        self.autonomy
+                        and event.get("type") == "drift_alert"
+                        and event.get("severity") == "critical"
+                    ):
+                        try:
+                            await self.autonomy.handle_drift_event(event)
+                        except Exception as e:
+                            log.warning("Autonomy drift handler error: %s", e)
+                    # Autonomy engine: neighbor warning on risk threshold
+                    if self.autonomy and event.get("type") == "risk_threshold":
+                        try:
+                            await self.autonomy.handle_risk_event(event, self.presence)
+                        except Exception as e:
+                            log.warning("Autonomy risk handler error: %s", e)
                     if self.presence and event.get("type") == "agent_new":
                         try:
                             await self.presence.handle_new_agent(event)
