@@ -1,0 +1,236 @@
+import json
+from unittest.mock import AsyncMock
+
+import discord
+import pytest
+
+from bridge.commands import (
+    build_status_embed,
+    build_agent_embed,
+    build_search_embeds,
+    build_health_embed,
+    build_resume_embed,
+    build_lumen_embed,
+    _parse_tool_result,
+    _fetch_agents,
+    _fetch_metrics,
+    _error_embed,
+)
+
+
+# ---------------------------------------------------------------------------
+# build_status_embed — delegates to build_hud_embed
+# ---------------------------------------------------------------------------
+
+def test_status_embed_with_agents():
+    agents = [{"id": "a1", "label": "opus"}]
+    metrics = {"a1": {"E": 0.7, "I": 0.6, "S": 0.5, "V": 0.1, "verdict": "proceed"}}
+    embed = build_status_embed(agents, metrics)
+    assert isinstance(embed, discord.Embed)
+    assert "opus" in embed.description
+
+
+def test_status_embed_empty():
+    embed = build_status_embed([], {})
+    assert "No active agents" in embed.description
+
+
+# ---------------------------------------------------------------------------
+# build_agent_embed
+# ---------------------------------------------------------------------------
+
+def test_agent_embed():
+    data = {
+        "label": "opus_hikewa",
+        "verdict": "proceed",
+        "E": 0.74, "I": 0.71, "S": 0.42, "V": 0.08,
+        "last_seen": "2026-02-20T10:30:00Z",
+    }
+    embed = build_agent_embed("abc12345-full-id", data)
+    assert "opus_hikewa" in embed.title
+    assert embed.colour == discord.Colour.green()
+    eisv_field = next(f for f in embed.fields if f.name == "EISV")
+    assert "0.74" in eisv_field.value
+
+
+def test_agent_embed_pause_verdict():
+    data = {"verdict": "pause", "E": 0, "I": 0, "S": 0, "V": 0}
+    embed = build_agent_embed("x", data)
+    assert embed.colour == discord.Colour.red()
+
+
+def test_agent_embed_unknown_verdict():
+    data = {"verdict": "exotic", "E": 0, "I": 0, "S": 0, "V": 0}
+    embed = build_agent_embed("x", data)
+    assert embed.colour == discord.Colour.greyple()
+
+
+def test_agent_embed_with_trajectory():
+    data = {"verdict": "guide", "E": 0, "I": 0, "S": 0, "V": 0, "trajectory": "converging"}
+    embed = build_agent_embed("x", data)
+    traj_field = next(f for f in embed.fields if f.name == "Trajectory")
+    assert traj_field.value == "converging"
+
+
+def test_agent_embed_minimal():
+    embed = build_agent_embed("agent-id", {})
+    assert "agent-id" in embed.title
+
+
+# ---------------------------------------------------------------------------
+# build_search_embeds
+# ---------------------------------------------------------------------------
+
+def test_search_embeds_returns_list():
+    results = [
+        {"title": "Result 1", "content": "Content 1", "type": "note"},
+        {"title": "Result 2", "content": "Content 2", "type": "insight"},
+    ]
+    embeds = build_search_embeds(results)
+    assert len(embeds) == 2
+    assert embeds[0].title == "Result 1"
+    assert embeds[1].title == "Result 2"
+
+
+def test_search_embeds_caps_at_five():
+    results = [{"title": f"R{i}", "type": "note"} for i in range(10)]
+    embeds = build_search_embeds(results)
+    assert len(embeds) == 5
+
+
+def test_search_embeds_empty():
+    embeds = build_search_embeds([])
+    assert len(embeds) == 0
+
+
+# ---------------------------------------------------------------------------
+# build_health_embed
+# ---------------------------------------------------------------------------
+
+def test_health_embed_ok():
+    health = {"status": "ok", "uptime": "12h", "active_agents": 3, "database": "connected", "version": "2.5.8"}
+    embed = build_health_embed(health)
+    assert embed.colour == discord.Colour.green()
+    assert embed.footer.text == "v2.5.8"
+    status_field = next(f for f in embed.fields if f.name == "Status")
+    assert status_field.value == "ok"
+
+
+def test_health_embed_unhealthy():
+    health = {"status": "degraded"}
+    embed = build_health_embed(health)
+    assert embed.colour == discord.Colour.red()
+
+
+def test_health_embed_no_version():
+    health = {"status": "ok"}
+    embed = build_health_embed(health)
+    # Should still work without version
+    assert isinstance(embed, discord.Embed)
+
+
+# ---------------------------------------------------------------------------
+# build_resume_embed
+# ---------------------------------------------------------------------------
+
+def test_resume_embed_success():
+    result = {"success": True, "message": "Agent resumed successfully"}
+    embed = build_resume_embed("agent-123", result)
+    assert embed.colour == discord.Colour.green()
+    assert "Resumed" in str(embed.fields)
+    assert "resumed successfully" in embed.description
+
+
+def test_resume_embed_failure():
+    result = {"success": False, "reason": "Agent not paused"}
+    embed = build_resume_embed("agent-123", result)
+    assert embed.colour == discord.Colour.red()
+    assert "Failed" in str(embed.fields)
+
+
+def test_resume_embed_resumed_key():
+    """Some responses use 'resumed' instead of 'success'."""
+    result = {"resumed": True}
+    embed = build_resume_embed("a1", result)
+    assert embed.colour == discord.Colour.green()
+
+
+# ---------------------------------------------------------------------------
+# build_lumen_embed — delegates to build_sensor_embed
+# ---------------------------------------------------------------------------
+
+def test_lumen_embed():
+    state = {
+        "ambient_temp": 22.5, "humidity": 35, "pressure": 827,
+        "light": 500, "cpu_temp": 45, "memory_percent": 62,
+        "neural": {"delta": 0.5, "theta": 0.3, "alpha": 0.7, "beta": 0.6, "gamma": 0.4},
+        "warmth": 0.65, "clarity": 0.72, "stability": 0.88, "presence": 0.55,
+    }
+    embed = build_lumen_embed(state)
+    assert isinstance(embed, discord.Embed)
+    assert "22.5" in embed.description
+
+
+# ---------------------------------------------------------------------------
+# _parse_tool_result
+# ---------------------------------------------------------------------------
+
+def test_parse_tool_result():
+    result = {"result": {"content": [{"text": json.dumps({"key": "value"})}]}}
+    assert _parse_tool_result(result) == {"key": "value"}
+
+
+def test_parse_tool_result_empty():
+    assert _parse_tool_result({}) == {}
+
+
+# ---------------------------------------------------------------------------
+# _fetch_agents
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fetch_agents():
+    gov = AsyncMock()
+    gov.call_tool = AsyncMock(return_value={
+        "result": {"content": [{"text": json.dumps([
+            {"agent_id": "a1", "label": "opus"},
+            {"agent_id": "a2", "name": "sonnet"},
+        ])}]},
+    })
+    agents = await _fetch_agents(gov)
+    assert len(agents) == 2
+    assert agents[0] == {"id": "a1", "label": "opus"}
+    assert agents[1] == {"id": "a2", "label": "sonnet"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_agents_returns_empty_on_none():
+    gov = AsyncMock()
+    gov.call_tool = AsyncMock(return_value=None)
+    agents = await _fetch_agents(gov)
+    assert agents == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_metrics():
+    gov = AsyncMock()
+    gov.call_tool = AsyncMock(return_value={
+        "result": {"content": [{"text": json.dumps({
+            "E": 0.7, "I": 0.6, "S": 0.5, "V": 0.1, "verdict": "proceed",
+        })}]},
+    })
+    agents = [{"id": "a1", "label": "test"}]
+    metrics = await _fetch_metrics(gov, agents)
+    assert "a1" in metrics
+    assert metrics["a1"]["verdict"] == "proceed"
+
+
+# ---------------------------------------------------------------------------
+# _error_embed
+# ---------------------------------------------------------------------------
+
+def test_error_embed():
+    embed = _error_embed("Something went wrong")
+    assert embed.colour == discord.Colour.red()
+    assert embed.title == "Error"
+    assert embed.description == "Something went wrong"
