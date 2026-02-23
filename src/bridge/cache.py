@@ -44,6 +44,15 @@ class BridgeCache:
                 discovery_id TEXT PRIMARY KEY,
                 post_id      INTEGER
             );
+            CREATE TABLE IF NOT EXISTS poll_state (
+                poll_id      TEXT PRIMARY KEY,
+                agent_id     TEXT,
+                verdict_type TEXT,
+                message_id   INTEGER,
+                channel_id   INTEGER,
+                expires_at   TEXT,
+                resolved     INTEGER DEFAULT 0
+            );
             """
         )
 
@@ -156,5 +165,55 @@ class BridgeCache:
             "INSERT INTO knowledge_posts (discovery_id, post_id) VALUES (?, ?)"
             " ON CONFLICT(discovery_id) DO UPDATE SET post_id = excluded.post_id",
             (discovery_id, post_id),
+        )
+        await self._db.commit()
+
+    # -- poll state ----------------------------------------------------------
+
+    async def save_poll(
+        self,
+        poll_id: str,
+        agent_id: str,
+        verdict_type: str,
+        message_id: int,
+        channel_id: int,
+        expires_at: str,
+    ) -> None:
+        """Insert a new poll record."""
+        assert self._db is not None
+        await self._db.execute(
+            "INSERT INTO poll_state"
+            " (poll_id, agent_id, verdict_type, message_id, channel_id, expires_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (poll_id, agent_id, verdict_type, message_id, channel_id, expires_at),
+        )
+        await self._db.commit()
+
+    async def get_active_polls(self) -> list[dict]:
+        """Return all unresolved polls."""
+        assert self._db is not None
+        async with self._db.execute(
+            "SELECT poll_id, agent_id, verdict_type, message_id, channel_id, expires_at"
+            " FROM poll_state WHERE resolved = 0"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [
+            {
+                "poll_id": r[0],
+                "agent_id": r[1],
+                "verdict_type": r[2],
+                "message_id": r[3],
+                "channel_id": r[4],
+                "expires_at": r[5],
+            }
+            for r in rows
+        ]
+
+    async def resolve_poll(self, poll_id: str) -> None:
+        """Mark a poll as resolved."""
+        assert self._db is not None
+        await self._db.execute(
+            "UPDATE poll_state SET resolved = 1 WHERE poll_id = ?",
+            (poll_id,),
         )
         await self._db.commit()
