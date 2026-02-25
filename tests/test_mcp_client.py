@@ -19,12 +19,24 @@ def make_mock_response(status_code=200, json_data=_SENTINEL, content=b""):
 
 
 def mock_httpx_client(method="get", response=None):
-    """Returns a patch context for httpx.AsyncClient."""
+    """Returns a patch context for httpx.AsyncClient.
+
+    The mock client is returned directly (no context manager) since
+    the MCP clients use _get_client() fallback, not `async with`.
+    """
     mock_client_instance = AsyncMock()
     getattr(mock_client_instance, method).return_value = response
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_client_instance.aclose = AsyncMock()
+    mock_client = MagicMock(return_value=mock_client_instance)
+    return patch("bridge.mcp_client.httpx.AsyncClient", mock_client)
+
+
+def mock_httpx_client_error(method="get", exc=None):
+    """Returns a patch for httpx.AsyncClient where the given method raises."""
+    mock_client_instance = AsyncMock()
+    getattr(mock_client_instance, method).side_effect = exc or Exception("error")
+    mock_client_instance.aclose = AsyncMock()
+    mock_client = MagicMock(return_value=mock_client_instance)
     return patch("bridge.mcp_client.httpx.AsyncClient", mock_client)
 
 
@@ -44,14 +56,23 @@ async def test_governance_fetch_events():
 
 
 @pytest.mark.asyncio
-async def test_governance_fetch_events_server_down():
-    mock_client_instance = AsyncMock()
-    mock_client_instance.get.side_effect = Exception("Connection refused")
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+async def test_governance_fetch_events_wrapped():
+    """The real /api/events endpoint wraps events in {success, events, count}."""
+    events = [{"event_id": 1, "type": "agent_new"}, {"event_id": 2, "type": "risk_threshold"}]
+    wrapped = {"success": True, "events": events, "count": 2}
+    resp = make_mock_response(json_data=wrapped)
 
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_client):
+    with mock_httpx_client("get", resp):
+        client = GovernanceClient("http://localhost:8767")
+        result = await client.fetch_events(since=0, limit=50)
+
+    assert result == events
+    assert client.consecutive_failures == 0
+
+
+@pytest.mark.asyncio
+async def test_governance_fetch_events_server_down():
+    with mock_httpx_client_error("get", Exception("Connection refused")):
         client = GovernanceClient("http://localhost:8767")
         result = await client.fetch_events()
 
@@ -62,20 +83,12 @@ async def test_governance_fetch_events_server_down():
 @pytest.mark.asyncio
 async def test_governance_consecutive_failures_reset():
     """After a failure, a successful call resets consecutive_failures to 0."""
-    # First: simulate a failure
-    mock_fail_instance = AsyncMock()
-    mock_fail_instance.get.side_effect = Exception("timeout")
-    mock_fail = MagicMock()
-    mock_fail.return_value.__aenter__ = AsyncMock(return_value=mock_fail_instance)
-    mock_fail.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_fail):
+    with mock_httpx_client_error("get", Exception("timeout")):
         client = GovernanceClient("http://localhost:8767")
         await client.fetch_events()
 
     assert client.consecutive_failures == 1
 
-    # Second: simulate a success
     resp = make_mock_response(json_data=[])
     with mock_httpx_client("get", resp):
         result = await client.fetch_events()
@@ -98,13 +111,7 @@ async def test_governance_fetch_health():
 
 @pytest.mark.asyncio
 async def test_governance_fetch_health_error():
-    mock_client_instance = AsyncMock()
-    mock_client_instance.get.side_effect = Exception("down")
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_client):
+    with mock_httpx_client_error("get", Exception("down")):
         client = GovernanceClient("http://localhost:8767")
         result = await client.fetch_health()
 
@@ -127,13 +134,7 @@ async def test_governance_call_tool():
 
 @pytest.mark.asyncio
 async def test_governance_call_tool_error():
-    mock_client_instance = AsyncMock()
-    mock_client_instance.post.side_effect = Exception("500 error")
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_client):
+    with mock_httpx_client_error("post", Exception("500 error")):
         client = GovernanceClient("http://localhost:8767")
         result = await client.call_tool("onboard", {})
 
@@ -158,13 +159,7 @@ async def test_anima_fetch_state():
 
 @pytest.mark.asyncio
 async def test_anima_fetch_state_offline():
-    mock_client_instance = AsyncMock()
-    mock_client_instance.get.side_effect = Exception("Connection refused")
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_client):
+    with mock_httpx_client_error("get", Exception("Connection refused")):
         client = AnimaClient("http://100.79.215.83:8766")
         result = await client.fetch_state()
 
@@ -174,25 +169,20 @@ async def test_anima_fetch_state_offline():
 
 @pytest.mark.asyncio
 async def test_anima_fetch_gallery():
-    gallery = {"drawings": [{"filename": "art_001.png", "timestamp": 1708700000}]}
-    resp = make_mock_response(json_data=gallery)
+    drawings = [{"filename": "art_001.png", "timestamp": 1708700000}]
+    gallery_response = {"drawings": drawings, "total": 1, "offset": 0, "limit": 5}
+    resp = make_mock_response(json_data=gallery_response)
 
     with mock_httpx_client("get", resp):
         client = AnimaClient("http://100.79.215.83:8766")
         result = await client.fetch_gallery(limit=5)
 
-    assert result == gallery
+    assert result == drawings
 
 
 @pytest.mark.asyncio
 async def test_anima_fetch_gallery_error():
-    mock_client_instance = AsyncMock()
-    mock_client_instance.get.side_effect = Exception("timeout")
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_client):
+    with mock_httpx_client_error("get", Exception("timeout")):
         client = AnimaClient("http://100.79.215.83:8766")
         result = await client.fetch_gallery()
 
@@ -213,14 +203,107 @@ async def test_anima_fetch_drawing_image():
 
 @pytest.mark.asyncio
 async def test_anima_fetch_drawing_image_error():
-    mock_client_instance = AsyncMock()
-    mock_client_instance.get.side_effect = Exception("404")
-    mock_client = MagicMock()
-    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_client_instance)
-    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("bridge.mcp_client.httpx.AsyncClient", mock_client):
+    with mock_httpx_client_error("get", Exception("404")):
         client = AnimaClient("http://100.79.215.83:8766")
         result = await client.fetch_drawing_image("nonexistent.png")
 
     assert result is None
+
+
+# --- Lifecycle tests ---
+
+@pytest.mark.asyncio
+async def test_governance_open_close():
+    """open() creates a persistent client, close() tears it down."""
+    with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
+        mock_instance = AsyncMock()
+        mock_cls.return_value = mock_instance
+        client = GovernanceClient("http://localhost:8767")
+
+        await client.open()
+        assert client._client is mock_instance
+
+        await client.close()
+        mock_instance.aclose.assert_awaited_once()
+        assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_anima_open_close():
+    """open() creates a persistent client, close() tears it down."""
+    with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
+        mock_instance = AsyncMock()
+        mock_cls.return_value = mock_instance
+        client = AnimaClient("http://100.79.215.83:8766")
+
+        await client.open()
+        assert client._client is mock_instance
+
+        await client.close()
+        mock_instance.aclose.assert_awaited_once()
+        assert client._client is None
+
+
+@pytest.mark.asyncio
+async def test_fallback_client_closed_after_use():
+    """When open() not called, each request creates and closes a one-shot client."""
+    resp = make_mock_response(json_data=[])
+    with mock_httpx_client("get", resp) as mock_cls:
+        client = GovernanceClient("http://localhost:8767")
+        await client.fetch_events()
+        # The fallback client should have been closed
+        mock_cls.return_value.aclose.assert_awaited_once()
+
+
+# --- Token auth tests ---
+
+@pytest.mark.asyncio
+async def test_governance_token_passed_as_header():
+    """When token is provided, httpx.AsyncClient gets Authorization header."""
+    with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
+        mock_instance = AsyncMock()
+        mock_cls.return_value = mock_instance
+        client = GovernanceClient("http://localhost:8767", token="my-secret-token")
+
+        await client.open()
+        mock_cls.assert_called_once_with(
+            base_url="http://localhost:8767",
+            timeout=10,
+            headers={"Authorization": "Bearer my-secret-token"},
+        )
+
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_anima_token_passed_as_header():
+    """When token is provided, httpx.AsyncClient gets Authorization header."""
+    with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
+        mock_instance = AsyncMock()
+        mock_cls.return_value = mock_instance
+        client = AnimaClient("http://100.79.215.83:8766", token="anima-secret")
+
+        await client.open()
+        mock_cls.assert_called_once_with(
+            base_url="http://100.79.215.83:8766",
+            timeout=10,
+            headers={"Authorization": "Bearer anima-secret"},
+        )
+
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_no_token_no_auth_header():
+    """When no token is provided, no Authorization header is set."""
+    with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
+        mock_instance = AsyncMock()
+        mock_cls.return_value = mock_instance
+        client = GovernanceClient("http://localhost:8767")
+
+        await client.open()
+        mock_cls.assert_called_once_with(
+            base_url="http://localhost:8767",
+            timeout=10,
+            headers={},
+        )

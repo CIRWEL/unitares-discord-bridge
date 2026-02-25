@@ -1,27 +1,25 @@
 import asyncio
 import logging
 import os
+from datetime import datetime, timezone
 
 import discord
 from discord.ext import commands
 
 from bridge.config import (
     DISCORD_TOKEN, GUILD_ID, GOVERNANCE_URL, ANIMA_URL,
+    GOVERNANCE_TOKEN, ANIMA_TOKEN,
     EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL, DB_PATH,
+    BRIDGE_EXTENSIONS,
 )
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient, AnimaClient
 from bridge.server_setup import ensure_server_structure
 from bridge.event_poller import EventPoller
 from bridge.hud import HUDUpdater
-from bridge.presence import PresenceManager
 from bridge.lumen import LumenPoller
-from bridge.dialectic import DialecticSync
-from bridge.knowledge import KnowledgeSync
 from bridge.commands import setup_commands
-from bridge.polls import PollManager
-from bridge.resonance import ResonanceTracker
-from bridge.autonomy import AutonomyEngine
+from bridge.extensions import Extension, ExtensionContext, load_extensions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,24 +31,25 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-gov_client = GovernanceClient(GOVERNANCE_URL)
-anima_client = AnimaClient(ANIMA_URL)
+gov_client = GovernanceClient(GOVERNANCE_URL, token=GOVERNANCE_TOKEN)
+anima_client = AnimaClient(ANIMA_URL, token=ANIMA_TOKEN)
 
 cache: BridgeCache | None = None
 event_poller: EventPoller | None = None
 hud_updater: HUDUpdater | None = None
-presence_manager: PresenceManager | None = None
 lumen_poller: LumenPoller | None = None
-dialectic_sync: DialecticSync | None = None
-knowledge_sync: KnowledgeSync | None = None
-poll_manager: PollManager | None = None
-resonance_tracker: ResonanceTracker | None = None
-autonomy_engine: AutonomyEngine | None = None
+audit_channel: discord.TextChannel | None = None
+_extensions: list[Extension] = []
+_initialized: bool = False
 
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, presence_manager, lumen_poller, dialectic_sync, knowledge_sync, poll_manager, resonance_tracker, autonomy_engine
+    global cache, event_poller, hud_updater, lumen_poller, audit_channel, _extensions, _initialized
+
+    if _initialized:
+        log.info("Reconnected as %s (skipping re-init)", bot.user)
+        return
 
     log.info("Bridge online as %s", bot.user)
     guild = bot.get_guild(GUILD_ID)
@@ -61,57 +60,23 @@ async def on_ready():
     channels = await ensure_server_structure(guild)
     log.info("Server structure ready: %d channels", len(channels))
 
+    # Open persistent HTTP clients
+    await gov_client.open()
+    await anima_client.open()
+
     # Open the SQLite cache for event cursors, HUD state, etc.
     os.makedirs(os.path.dirname(DB_PATH) or "data", exist_ok=True)
     cache = BridgeCache(DB_PATH)
     await cache.__aenter__()
 
-    # Set up presence manager if AGENTS category and lobby exist
-    agents_category = {c.name: c for c in guild.categories}.get("AGENTS")
-    lobby_ch = channels.get("agent-lobby")
-    if agents_category and lobby_ch:
-        presence_manager = PresenceManager(
-            gov_client, cache, guild, agents_category, lobby_ch,
-        )
-        await presence_manager.start()
-        log.info("Presence manager started")
-
-    # Set up poll manager for governance votes
-    audit_ch = channels.get("audit-log")
-    poll_manager = PollManager(gov_client, cache, audit_channel=audit_ch)
-    poll_manager.bot = bot
-    if audit_ch:
-        await poll_manager.start()
-        log.info("Poll manager started")
-
-    # Set up resonance tracker if #resonance channel exists
-    resonance_ch = channels.get("resonance")
-    if resonance_ch:
-        resonance_tracker = ResonanceTracker(resonance_ch)
-        log.info("Resonance tracker ready")
-
-    # Set up autonomy engine for autonomous governance decisions
-    alerts_ch = channels.get("alerts")
-    if alerts_ch:
-        autonomy_engine = AutonomyEngine(
-            gov_client, cache,
-            alerts_channel=alerts_ch,
-            audit_channel=audit_ch,
-        )
-        await autonomy_engine.start()
-        log.info("Autonomy engine started")
-
     # Start the event poller if both channels exist
     events_ch = channels.get("events")
+    alerts_ch = channels.get("alerts")
+    audit_channel = channels.get("audit-log")
     if events_ch and alerts_ch:
         event_poller = EventPoller(
             gov_client, cache, events_ch, alerts_ch, EVENT_POLL_INTERVAL,
-            presence_manager=presence_manager,
-            poll_manager=poll_manager,
-            resonance_tracker=resonance_tracker,
-            audit_channel=audit_ch,
-            guild=guild,
-            autonomy_engine=autonomy_engine,
+            audit_channel=audit_channel,
         )
         await event_poller.start()
         log.info("Event poller started")
@@ -121,6 +86,7 @@ async def on_ready():
     if hud_ch:
         hud_updater = HUDUpdater(
             gov_client, cache, hud_ch, HUD_UPDATE_INTERVAL,
+            anima_client=anima_client,
         )
         await hud_updater.start()
         log.info("HUD updater started")
@@ -136,20 +102,6 @@ async def on_ready():
         await lumen_poller.start()
         log.info("Lumen poller started")
 
-    # Start the dialectic sync if the forum channel exists
-    forum_ch = channels.get("dialectic-forum")
-    if forum_ch:
-        dialectic_sync = DialecticSync(gov_client, cache, forum_ch)
-        await dialectic_sync.start()
-        log.info("Dialectic sync started")
-
-    # Start the knowledge sync if the discoveries forum exists
-    discoveries_ch = channels.get("discoveries")
-    if discoveries_ch:
-        knowledge_sync = KnowledgeSync(gov_client, cache, discoveries_ch)
-        await knowledge_sync.start()
-        log.info("Knowledge sync started")
-
     # Sync the slash command tree
     try:
         await bot.tree.sync()
@@ -157,7 +109,38 @@ async def on_ready():
     except Exception as exc:
         log.error("Failed to sync command tree: %s", exc)
 
-    log.info("All systems ready — events, HUD, presence, Lumen, dialectic, knowledge, autonomy, commands active")
+    # Load deferred extensions if configured
+    if BRIDGE_EXTENSIONS:
+        ctx = ExtensionContext(
+            guild=guild,
+            channels=channels,
+            gov_client=gov_client,
+            anima_client=anima_client,
+            cache=cache,
+            bot=bot,
+        )
+        _extensions = await load_extensions(BRIDGE_EXTENSIONS, ctx)
+        log.info("Extensions loaded: %d of %d", len(_extensions), len(BRIDGE_EXTENSIONS))
+
+    # Post startup message to audit log
+    if audit_channel:
+        active = [n for n, c in [("events", event_poller), ("HUD", hud_updater), ("Lumen", lumen_poller)] if c]
+        if _extensions:
+            active.append(f"{len(_extensions)} extensions")
+        embed = discord.Embed(
+            title="Bridge Online",
+            description=f"Systems active: {', '.join(active) or 'none'}",
+            colour=discord.Colour.green(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_footer(text=str(bot.user))
+        try:
+            await audit_channel.send(embed=embed)
+        except discord.HTTPException as exc:
+            log.warning("Failed to post startup message: %s", exc)
+
+    _initialized = True
+    log.info("All systems ready — events, HUD, Lumen, commands active")
 
 
 @bot.event
@@ -165,16 +148,31 @@ async def on_close():
     """Graceful shutdown: stop all background tasks and close the cache."""
     log.info("Shutting down bridge...")
 
-    # Stop all background pollers/syncs
+    # Post shutdown message while connection is still alive
+    if audit_channel is not None:
+        embed = discord.Embed(
+            title="Bridge Offline",
+            description="Shutting down gracefully.",
+            colour=discord.Colour.orange(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        try:
+            await audit_channel.send(embed=embed)
+        except Exception:
+            pass  # Best-effort — connection may already be closing
+
+    # Stop extensions first (they may depend on core pollers)
+    for ext in _extensions:
+        try:
+            await ext.stop()
+        except Exception as exc:
+            log.warning("Error stopping extension: %s", exc)
+
+    # Stop all background pollers
     for name, component in [
         ("event_poller", event_poller),
         ("hud_updater", hud_updater),
-        ("presence_manager", presence_manager),
         ("lumen_poller", lumen_poller),
-        ("dialectic_sync", dialectic_sync),
-        ("knowledge_sync", knowledge_sync),
-        ("poll_manager", poll_manager),
-        ("autonomy_engine", autonomy_engine),
     ]:
         if component is not None:
             try:
@@ -190,6 +188,10 @@ async def on_close():
             log.info("Cache closed")
         except Exception as exc:
             log.warning("Error closing cache: %s", exc)
+
+    # Close persistent HTTP clients
+    await gov_client.close()
+    await anima_client.close()
 
     log.info("Shutdown complete")
 
