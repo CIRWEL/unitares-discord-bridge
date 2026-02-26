@@ -50,15 +50,6 @@ def build_agent_embed(agent_id: str, data: dict) -> discord.Embed:
     return embed
 
 
-def build_search_embeds(results: list[dict]) -> list[discord.Embed]:
-    """Build up to 5 embeds from knowledge search results."""
-    from bridge.knowledge import build_knowledge_embed
-    embeds = []
-    for entry in results[:5]:
-        embeds.append(build_knowledge_embed(entry))
-    return embeds
-
-
 def build_health_embed(health: dict) -> discord.Embed:
     """Build a system health embed from /health response."""
     status = health.get("status", "unknown")
@@ -69,15 +60,25 @@ def build_health_embed(health: dict) -> discord.Embed:
         timestamp=datetime.now(timezone.utc),
     )
     embed.add_field(name="Status", value=status, inline=True)
-    embed.add_field(
-        name="Uptime", value=str(health.get("uptime", "?")), inline=True,
-    )
-    embed.add_field(
-        name="Agents", value=str(health.get("active_agents", "?")), inline=True,
-    )
 
-    db_status = health.get("database", health.get("db", "?"))
-    embed.add_field(name="Database", value=str(db_status), inline=True)
+    # Uptime may be a dict {"seconds": N, "formatted": "Xm Ys"} or a string
+    uptime = health.get("uptime", "?")
+    if isinstance(uptime, dict):
+        uptime = uptime.get("formatted", f"{uptime.get('seconds', '?')}s")
+    embed.add_field(name="Uptime", value=str(uptime), inline=True)
+
+    # Connection count from the connections block
+    connections = health.get("connections", {})
+    if isinstance(connections, dict):
+        embed.add_field(
+            name="Connections", value=str(connections.get("active", "?")), inline=True,
+        )
+
+    # Database status may be a dict {"status": "connected", ...} or a string
+    db = health.get("database", health.get("db", "?"))
+    if isinstance(db, dict):
+        db = db.get("status", "?")
+    embed.add_field(name="Database", value=str(db), inline=True)
 
     version = health.get("version", "")
     if version:
@@ -183,45 +184,6 @@ def setup_commands(
                 embed=_error_embed(f"Failed to fetch agent '{name}'."),
             )
 
-    @tree.command(name="search", description="Search the knowledge graph")
-    @app_commands.describe(query="Search query")
-    async def cmd_search(interaction: discord.Interaction, query: str) -> None:
-        await interaction.response.defer()
-        try:
-            result = await gov_client.call_tool(
-                "knowledge", {"action": "search", "query": query, "limit": 5},
-            )
-            if not result:
-                await interaction.followup.send(
-                    embed=_error_embed("Knowledge search unavailable."),
-                )
-                return
-            data = _parse_tool_result(result)
-            if isinstance(data, dict):
-                entries = data.get("results", data.get("entries", []))
-            elif isinstance(data, list):
-                entries = data
-            else:
-                entries = []
-
-            if not entries:
-                await interaction.followup.send(
-                    embed=discord.Embed(
-                        title="Search Results",
-                        description=f"No results for: {query}",
-                        colour=discord.Colour.light_grey(),
-                    ),
-                )
-                return
-
-            embeds = build_search_embeds(entries)
-            await interaction.followup.send(embeds=embeds)
-        except Exception as exc:
-            log.error("/search error: %s", exc)
-            await interaction.followup.send(
-                embed=_error_embed("Search failed."),
-            )
-
     @tree.command(name="health", description="System health check")
     async def cmd_health(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
@@ -242,7 +204,6 @@ def setup_commands(
 
     @tree.command(name="resume", description="Resume a paused agent")
     @app_commands.describe(agent="Agent ID to resume")
-    @app_commands.checks.has_role("governance-council")
     async def cmd_resume(interaction: discord.Interaction, agent: str) -> None:
         await interaction.response.defer()
         try:
@@ -263,24 +224,6 @@ def setup_commands(
             log.error("/resume error: %s", exc)
             await interaction.followup.send(
                 embed=_error_embed(f"Resume failed for '{agent}'."),
-            )
-
-    @cmd_resume.error
-    async def cmd_resume_error(
-        interaction: discord.Interaction, error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingRole):
-            await interaction.response.send_message(
-                embed=_error_embed(
-                    "You need the **governance-council** role to resume agents."
-                ),
-                ephemeral=True,
-            )
-        else:
-            log.error("/resume unexpected error: %s", error)
-            await interaction.response.send_message(
-                embed=_error_embed("An unexpected error occurred."),
-                ephemeral=True,
             )
 
     @tree.command(name="lumen", description="Current Lumen state and sensors")

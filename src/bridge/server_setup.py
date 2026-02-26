@@ -14,21 +14,12 @@ CHANNEL_STRUCTURE: dict[str, dict[str, dict[str, str]]] = {
     "GOVERNANCE": {
         "events": {"type": "text", "topic": "All governance events — verdicts, risk, drift"},
         "alerts": {"type": "text", "topic": "Critical only — pause, reject, risk > 70%"},
-        "dialectic-forum": {"type": "forum", "topic": "Governance dialectics — thesis, antithesis, synthesis"},
         "governance-hud": {"type": "text", "topic": "Auto-updating system status"},
-    },
-    "AGENTS": {
-        "agent-lobby": {"type": "text", "topic": "New agent announcements"},
-        "resonance": {"type": "text", "topic": "CIRS resonance events between agents"},
     },
     "LUMEN": {
         "lumen-stream": {"type": "text", "topic": "Lumen's inner voice and presence"},
         "lumen-art": {"type": "text", "topic": "Lumen's drawings"},
         "lumen-sensors": {"type": "text", "topic": "Environmental sensor readings"},
-    },
-    "KNOWLEDGE": {
-        "discoveries": {"type": "forum", "topic": "Knowledge graph entries"},
-        "knowledge-search": {"type": "text", "topic": "Search the knowledge graph"},
     },
     "CONTROL": {
         "commands": {"type": "text", "topic": "Slash commands for governance actions"},
@@ -37,11 +28,7 @@ CHANNEL_STRUCTURE: dict[str, dict[str, dict[str, str]]] = {
 }
 
 ROLES: dict[str, discord.Colour] = {
-    "governance-council": discord.Colour.gold(),
     "observer": discord.Colour.light_grey(),
-    "agent-active": discord.Colour.green(),
-    "agent-boundary": discord.Colour.orange(),
-    "agent-degraded": discord.Colour.red(),
     "lumen": discord.Colour.blue(),
 }
 

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
-from bridge.knowledge import build_knowledge_embed, KnowledgeSync
+from bridge.deferred.knowledge import build_knowledge_embed, KnowledgeSync
 
 
 # ---------------------------------------------------------------------------

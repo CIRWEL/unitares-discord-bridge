@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
-from bridge.resonance import (
+from bridge.deferred.resonance import (
     ResonanceTracker,
     build_resonance_alert_embed,
     build_state_update_embed,

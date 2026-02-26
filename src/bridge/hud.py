@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import discord
 
 from bridge.cache import BridgeCache
-from bridge.mcp_client import GovernanceClient
+from bridge.mcp_client import AnimaClient, GovernanceClient
 from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ DEFAULT_METRICS = {"E": 0.0, "I": 0.0, "S": 0.0, "V": 0.0, "verdict": "guide"}
 def build_hud_embed(
     agents: list[dict],
     metrics: dict[str, dict],
+    connection_status: dict[str, bool] | None = None,
 ) -> discord.Embed:
     """Build a Discord embed summarising all active agents and their EISV metrics.
 
@@ -44,10 +45,17 @@ def build_hud_embed(
         colour=discord.Colour.blurple(),
     )
 
+    conn_line = ""
+    if connection_status:
+        parts = []
+        for svc, ok in connection_status.items():
+            parts.append(f"{svc}: {'OK' if ok else 'DOWN'}")
+        conn_line = " | ".join(parts) + "\n"
+
     if not agents:
         embed.description = "No active agents"
         now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-        embed.set_footer(text=f"0 agents | 0 paused | 0 boundary | Updated {now}")
+        embed.set_footer(text=f"{conn_line}0 agents | 0 paused | 0 boundary | Updated {now}")
         return embed
 
     lines: list[str] = []
@@ -79,7 +87,7 @@ def build_hud_embed(
     embed.description = "\n".join(lines)
     now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     embed.set_footer(
-        text=f"{len(agents)} agents | {paused} paused | {boundary} boundary | Updated {now}"
+        text=f"{conn_line}{len(agents)} agents | {paused} paused | {boundary} boundary | Updated {now}"
     )
     return embed
 
@@ -93,8 +101,10 @@ class HUDUpdater:
         cache: BridgeCache,
         hud_channel: discord.TextChannel,
         interval: int = 30,
+        anima_client: AnimaClient | None = None,
     ) -> None:
         self.gov = gov_client
+        self.anima = anima_client
         self.cache = cache
         self.hud_channel = hud_channel
         self.interval = interval
@@ -131,7 +141,12 @@ class HUDUpdater:
             try:
                 agents = await self._fetch_agents()
                 metrics = await self._fetch_metrics(agents)
-                embed = build_hud_embed(agents, metrics)
+                conn = {
+                    "Governance": self.gov.consecutive_failures == 0,
+                }
+                if self.anima is not None:
+                    conn["Lumen"] = self.anima.is_online
+                embed = build_hud_embed(agents, metrics, connection_status=conn)
                 if self._message is not None:
                     await self._message.edit(embed=embed)
             except Exception as exc:

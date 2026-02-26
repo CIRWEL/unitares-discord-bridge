@@ -10,7 +10,6 @@ import discord
 from bridge.cache import BridgeCache
 from bridge.embeds import event_to_embed, is_critical_event
 from bridge.mcp_client import GovernanceClient
-from bridge.resonance import CIRS_EVENT_TYPES
 from bridge.tasks import create_logged_task
 
 log = logging.getLogger(__name__)
@@ -26,24 +25,14 @@ class EventPoller:
         events_channel: discord.TextChannel,
         alerts_channel: discord.TextChannel,
         interval: int = 10,
-        presence_manager=None,
-        poll_manager=None,
-        resonance_tracker=None,
         audit_channel: discord.TextChannel | None = None,
-        guild: discord.Guild | None = None,
-        autonomy_engine=None,
     ) -> None:
         self.gov = gov_client
         self.cache = cache
         self.events_channel = events_channel
         self.alerts_channel = alerts_channel
         self.interval = interval
-        self.presence = presence_manager
-        self.poll_manager = poll_manager
-        self.resonance = resonance_tracker
         self.audit_channel = audit_channel
-        self.guild = guild
-        self.autonomy = autonomy_engine
         self._task: asyncio.Task | None = None
         self._send_task: asyncio.Task | None = None
         self._gov_alert_sent: bool = False
@@ -72,56 +61,6 @@ class EventPoller:
                     await self._message_queue.put((self.events_channel, embed))
                     if is_critical_event(event):
                         await self._message_queue.put((self.alerts_channel, embed))
-                    # Trigger poll for pause/reject verdicts
-                    if (
-                        self.poll_manager
-                        and self.audit_channel
-                        and self.guild
-                        and event.get("type") == "verdict_change"
-                        and event.get("to") in ("pause", "reject")
-                    ):
-                        try:
-                            await self.poll_manager.handle_verdict_event(
-                                event, self.alerts_channel, self.audit_channel, self.guild,
-                            )
-                        except Exception as e:
-                            log.warning("Poll manager error: %s", e)
-                    # Autonomy engine: auto-dialectic on verdict change
-                    if (
-                        self.autonomy
-                        and event.get("type") == "verdict_change"
-                        and event.get("to") in ("pause", "reject")
-                    ):
-                        try:
-                            await self.autonomy.handle_verdict_event(event)
-                        except Exception as e:
-                            log.warning("Autonomy verdict handler error: %s", e)
-                    # Autonomy engine: auto-dialectic on critical drift
-                    if (
-                        self.autonomy
-                        and event.get("type") == "drift_alert"
-                        and event.get("severity") == "critical"
-                    ):
-                        try:
-                            await self.autonomy.handle_drift_event(event)
-                        except Exception as e:
-                            log.warning("Autonomy drift handler error: %s", e)
-                    # Autonomy engine: neighbor warning on risk threshold
-                    if self.autonomy and event.get("type") == "risk_threshold":
-                        try:
-                            await self.autonomy.handle_risk_event(event, self.presence)
-                        except Exception as e:
-                            log.warning("Autonomy risk handler error: %s", e)
-                    if self.presence and event.get("type") == "agent_new":
-                        try:
-                            await self.presence.handle_new_agent(event)
-                        except Exception as e:
-                            log.warning("Presence handler error: %s", e)
-                    if self.resonance and event.get("type") in CIRS_EVENT_TYPES:
-                        try:
-                            await self.resonance.handle_event(event)
-                        except Exception as e:
-                            log.warning("Resonance handler error: %s", e)
                 if events:
                     last_id = max(e.get("event_id", 0) for e in events)
                     await self.cache.set_event_cursor(last_id)
@@ -132,8 +71,13 @@ class EventPoller:
                         colour=discord.Colour.dark_red(),
                     )
                     await self._message_queue.put((self.alerts_channel, warn))
-                elif self.gov.consecutive_failures == 0:
+                elif self.gov.consecutive_failures == 0 and self._gov_alert_sent:
                     self._gov_alert_sent = False
+                    recovered = discord.Embed(
+                        title="Governance MCP Recovered",
+                        colour=discord.Colour.green(),
+                    )
+                    await self._message_queue.put((self.alerts_channel, recovered))
             except Exception as exc:
                 log.error("Event poll error: %s", exc)
             await asyncio.sleep(self.interval)

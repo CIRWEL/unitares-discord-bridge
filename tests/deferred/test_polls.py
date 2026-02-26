@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
-from bridge.polls import (
+from bridge.deferred.polls import (
     CONSERVATIVE_INDEX,
     PAUSE_OPTIONS,
     REJECT_OPTIONS,
@@ -200,8 +200,8 @@ def test_tally_investigate_wins():
 
 @pytest.fixture
 def cache(tmp_path):
-    from bridge.cache import BridgeCache
-    return BridgeCache(str(tmp_path / "test.db"))
+    from bridge.deferred.cache import DeferredCache
+    return DeferredCache(str(tmp_path / "test.db"))
 
 
 @pytest.mark.asyncio

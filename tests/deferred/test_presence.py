@@ -1,4 +1,4 @@
-from bridge.presence import verdict_to_role_name
+from bridge.deferred.presence import verdict_to_role_name
 
 
 def test_verdict_proceed():

@@ -7,7 +7,6 @@ import pytest
 from bridge.commands import (
     build_status_embed,
     build_agent_embed,
-    build_search_embeds,
     build_health_embed,
     build_resume_embed,
     build_lumen_embed,
@@ -78,32 +77,6 @@ def test_agent_embed_minimal():
 
 
 # ---------------------------------------------------------------------------
-# build_search_embeds
-# ---------------------------------------------------------------------------
-
-def test_search_embeds_returns_list():
-    results = [
-        {"title": "Result 1", "content": "Content 1", "type": "note"},
-        {"title": "Result 2", "content": "Content 2", "type": "insight"},
-    ]
-    embeds = build_search_embeds(results)
-    assert len(embeds) == 2
-    assert embeds[0].title == "Result 1"
-    assert embeds[1].title == "Result 2"
-
-
-def test_search_embeds_caps_at_five():
-    results = [{"title": f"R{i}", "type": "note"} for i in range(10)]
-    embeds = build_search_embeds(results)
-    assert len(embeds) == 5
-
-
-def test_search_embeds_empty():
-    embeds = build_search_embeds([])
-    assert len(embeds) == 0
-
-
-# ---------------------------------------------------------------------------
 # build_health_embed
 # ---------------------------------------------------------------------------
 
@@ -127,6 +100,25 @@ def test_health_embed_no_version():
     embed = build_health_embed(health)
     # Should still work without version
     assert isinstance(embed, discord.Embed)
+
+
+def test_health_embed_nested_fields():
+    """Real /health response has nested uptime, database, connections dicts."""
+    health = {
+        "status": "ok",
+        "version": "2.7.0",
+        "uptime": {"seconds": 1921, "formatted": "32m 1s"},
+        "connections": {"active": 5, "healthy": 3},
+        "database": {"status": "connected", "pool_size": 3},
+    }
+    embed = build_health_embed(health)
+    assert embed.colour == discord.Colour.green()
+    uptime_field = next(f for f in embed.fields if f.name == "Uptime")
+    assert uptime_field.value == "32m 1s"
+    db_field = next(f for f in embed.fields if f.name == "Database")
+    assert db_field.value == "connected"
+    conn_field = next(f for f in embed.fields if f.name == "Connections")
+    assert conn_field.value == "5"
 
 
 # ---------------------------------------------------------------------------

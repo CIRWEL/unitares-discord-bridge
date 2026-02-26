@@ -1,5 +1,5 @@
 import discord
-from bridge.dialectic import (
+from bridge.deferred.dialectic import (
     build_dialectic_post_embed, build_thesis_embed,
     build_antithesis_embed, build_synthesis_embed, build_resolution_embed,
 )

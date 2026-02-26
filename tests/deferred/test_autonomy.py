@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
-from bridge.autonomy import (
+from bridge.deferred.autonomy import (
     AutonomyEngine,
     RECOVERY_E_MIN,
     RECOVERY_I_MIN,
