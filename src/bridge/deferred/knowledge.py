@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 import discord
@@ -11,6 +10,7 @@ import discord
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient
 from bridge.tasks import create_logged_task
+from bridge.utils import parse_tool_result as _parse_tool_result_util
 
 log = logging.getLogger(__name__)
 
@@ -167,10 +167,32 @@ class KnowledgeSync:
     # -- Helpers ------------------------------------------------------------
 
     @staticmethod
-    def _parse_tool_result(result: dict) -> dict | list:
-        """Unwrap the MCP tool result envelope."""
-        content = result.get("result", {}).get("content", [])
-        if content:
-            text = content[0].get("text", "{}")
-            return json.loads(text)
-        return {}
+    def _parse_tool_result(result: dict | None) -> dict | list:
+        """Delegate to the shared utility (issue #7)."""
+        return _parse_tool_result_util(result)
+
+
+# ---------------------------------------------------------------------------
+# Extension entry point (issue #1 — extensions.py requires this)
+# ---------------------------------------------------------------------------
+
+async def setup(ctx) -> "KnowledgeSync":  # ctx: ExtensionContext
+    """Create and return a KnowledgeSync, creating the forum channel if needed."""
+    from bridge.extensions import ExtensionContext
+    assert isinstance(ctx, ExtensionContext)
+
+    forum = discord.utils.get(ctx.guild.forums, name="knowledge-graph")
+    if forum is None:
+        gov_cat = discord.utils.get(ctx.guild.categories, name="GOVERNANCE")
+        forum = await ctx.guild.create_forum(
+            name="knowledge-graph",
+            category=gov_cat,
+            topic="Knowledge graph discoveries from the UNITARES governance system",
+        )
+        log.info("Created knowledge-graph forum channel")
+
+    return KnowledgeSync(
+        gov_client=ctx.gov_client,
+        cache=ctx.cache,
+        forum_channel=forum,
+    )

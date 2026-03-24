@@ -17,3 +17,8 @@ dev = [
 
 [project.scripts]
 unitares-bridge = "bridge.bot:main"
+
+[tool.pytest.ini_options]
+# asyncio_mode=auto: pytest-asyncio treats every async test as an asyncio test
+# automatically, preventing async tests from being silently skipped (issue #13)
+asyncio_mode = "auto"

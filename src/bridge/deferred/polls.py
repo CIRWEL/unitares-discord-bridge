@@ -8,7 +8,6 @@ to the conservative option.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -18,6 +17,7 @@ import discord
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient
 from bridge.tasks import create_logged_task
+from bridge.utils import parse_tool_result as _parse_tool_result_util
 
 log = logging.getLogger(__name__)
 
@@ -179,15 +179,9 @@ def tally_votes(
 # ---------------------------------------------------------------------------
 
 
+# Consolidated to bridge.utils (issue #7).
 def _parse_tool_result(result: dict | None) -> dict | list:
-    """Unwrap the MCP tool result envelope."""
-    if result is None:
-        return {}
-    content = result.get("result", {}).get("content", [])
-    if content:
-        text = content[0].get("text", "{}")
-        return json.loads(text)
-    return {}
+    return _parse_tool_result_util(result)
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +439,25 @@ class PollManager:
             count = max(reaction.count - 1, 0)
             counts[emoji_str] = count
         return counts
+
+
+# ---------------------------------------------------------------------------
+# Extension entry point (issue #1 — extensions.py requires this)
+# ---------------------------------------------------------------------------
+
+async def setup(ctx) -> "PollManager":  # ctx: ExtensionContext
+    """Create and return a PollManager wired to ctx.
+
+    The bot reference (needed to fetch reaction messages) is set here —
+    previously it was left as None and never wired (issue #2).
+    """
+    from bridge.extensions import ExtensionContext
+    assert isinstance(ctx, ExtensionContext)
+    manager = PollManager(
+        gov_client=ctx.gov_client,
+        cache=ctx.cache,
+        audit_channel=ctx.channels.get("audit-log"),
+    )
+    # Wire bot reference so _fetch_reaction_counts can look up channels
+    manager.bot = ctx.bot
+    return manager

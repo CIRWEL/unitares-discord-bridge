@@ -118,12 +118,22 @@ def _extract_agent_ids(event: dict) -> tuple[str, str] | None:
 # Resonance Tracker
 # ---------------------------------------------------------------------------
 
+log = logging.getLogger(__name__)
+
+
 class ResonanceTracker:
     """Track CIRS resonance events and manage Discord threads in #resonance."""
 
     def __init__(self, resonance_channel: discord.TextChannel) -> None:
         self.channel = resonance_channel
         self._active_threads: dict[str, discord.Thread] = {}
+
+    # Extension protocol — ResonanceTracker is event-driven, no background loop
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
 
     async def handle_event(self, event: dict) -> None:
         """Dispatch a CIRS event to the appropriate handler."""
@@ -228,3 +238,17 @@ class ResonanceTracker:
             log.warning("Failed to archive resonance thread: %s", exc)
         finally:
             self._active_threads.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Extension entry point (issue #1 — extensions.py requires this)
+# ---------------------------------------------------------------------------
+
+async def setup(ctx) -> "ResonanceTracker":  # ctx: ExtensionContext
+    """Create and return a ResonanceTracker bound to the events channel."""
+    from bridge.extensions import ExtensionContext
+    assert isinstance(ctx, ExtensionContext)
+
+    # Post resonance threads into #events (or a dedicated #resonance if present)
+    channel = ctx.channels.get("resonance") or ctx.channels.get("events")
+    return ResonanceTracker(resonance_channel=channel)

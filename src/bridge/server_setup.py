@@ -27,10 +27,8 @@ CHANNEL_STRUCTURE: dict[str, dict[str, dict[str, str]]] = {
     },
 }
 
-ROLES: dict[str, discord.Colour] = {
-    "observer": discord.Colour.light_grey(),
-    "lumen": discord.Colour.blue(),
-}
+# Removed: 'observer' and 'lumen' roles were auto-created here but never
+# assigned to any member or used in permission overwrites (issue #12).
 
 
 # ---------------------------------------------------------------------------
@@ -40,18 +38,11 @@ ROLES: dict[str, discord.Colour] = {
 async def ensure_server_structure(
     guild: discord.Guild,
 ) -> dict[str, discord.abc.GuildChannel]:
-    """Ensure all required roles, categories, and channels exist in *guild*.
+    """Ensure all required categories and channels exist in *guild*.
 
     Returns a mapping of ``channel_name -> channel`` for every channel in the
     structure (whether it already existed or was freshly created).
     """
-
-    # ---- Roles -------------------------------------------------------------
-    existing_roles = {r.name: r for r in guild.roles}
-    for role_name, colour in ROLES.items():
-        if role_name not in existing_roles:
-            await guild.create_role(name=role_name, colour=colour)
-            log.info("Created role: %s", role_name)
 
     # ---- Categories & channels ---------------------------------------------
     existing_categories = {c.name: c for c in guild.categories}

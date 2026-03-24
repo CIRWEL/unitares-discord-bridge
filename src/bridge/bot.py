@@ -9,7 +9,8 @@ from discord.ext import commands
 from bridge.config import (
     DISCORD_TOKEN, GUILD_ID, GOVERNANCE_URL, ANIMA_URL,
     GOVERNANCE_TOKEN, ANIMA_TOKEN,
-    EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL, DB_PATH,
+    EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL,
+    DRAWING_POLL_INTERVAL, DB_PATH,
     BRIDGE_EXTENSIONS,
 )
 from bridge.cache import BridgeCache
@@ -97,7 +98,9 @@ async def on_ready():
     sensor_ch = channels.get("lumen-sensors")
     if stream_ch and art_ch and sensor_ch:
         lumen_poller = LumenPoller(
-            anima_client, stream_ch, art_ch, sensor_ch, SENSOR_POLL_INTERVAL,
+            anima_client, stream_ch, art_ch, sensor_ch,
+            sensor_interval=SENSOR_POLL_INTERVAL,
+            drawing_interval=DRAWING_POLL_INTERVAL,
         )
         await lumen_poller.start()
         log.info("Lumen poller started")
@@ -199,6 +202,11 @@ async def on_close():
 def main():
     if not DISCORD_TOKEN:
         raise ValueError("DISCORD_BOT_TOKEN environment variable is required")
+    # Fail fast rather than silently connecting to no guild (issue #8)
+    if not GUILD_ID:
+        raise ValueError(
+            "DISCORD_GUILD_ID environment variable is required and must not be 0"
+        )
     setup_commands(bot, gov_client, anima_client)
     bot.run(DISCORD_TOKEN)
 

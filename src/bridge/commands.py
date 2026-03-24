@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -10,6 +9,7 @@ import discord
 from discord import app_commands
 
 from bridge.mcp_client import GovernanceClient, AnimaClient
+from bridge.utils import parse_tool_result, fetch_agents as _fetch_agents_impl, fetch_metrics as _fetch_metrics_impl
 
 log = logging.getLogger(__name__)
 
@@ -123,13 +123,12 @@ def _verdict_colour(verdict: str) -> discord.Colour:
     }.get(verdict, discord.Colour.greyple())
 
 
-def _parse_tool_result(result: dict) -> dict | list:
-    """Unwrap the MCP tool result envelope."""
-    content = result.get("result", {}).get("content", [])
-    if content:
-        text = content[0].get("text", "{}")
-        return json.loads(text)
-    return {}
+# Expose parse_tool_result under its original local name so existing tests
+# that import it from this module continue to work (issue #3 / #7).
+# Previously lacked a None guard — now delegates to the safe shared util.
+def _parse_tool_result(result: dict | None) -> dict | list:
+    """Unwrap the MCP tool result envelope (None-safe)."""
+    return parse_tool_result(result)
 
 
 # ---------------------------------------------------------------------------
@@ -258,48 +257,16 @@ def _error_embed(message: str) -> discord.Embed:
 # Internal helpers (shared with HUDUpdater pattern)
 # ---------------------------------------------------------------------------
 
+# Consolidated into bridge.utils (issues #7, #9).  Kept here as thin
+# wrappers so existing tests that import from this module still work.
+
 async def _fetch_agents(gov_client: GovernanceClient) -> list[dict]:
-    """Call list_agents and normalise response."""
-    result = await gov_client.call_tool("list_agents", {})
-    if result is None:
-        return []
-    try:
-        data = _parse_tool_result(result)
-        agents = []
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            agent_id = item.get("agent_id") or item.get("id", "")
-            label = item.get("label") or item.get("name") or agent_id
-            agents.append({"id": agent_id, "label": label})
-        return agents
-    except (json.JSONDecodeError, TypeError, KeyError) as exc:
-        log.warning("Failed to parse list_agents: %s", exc)
-        return []
+    """Delegate to the shared fetch_agents utility."""
+    return await _fetch_agents_impl(gov_client)
 
 
 async def _fetch_metrics(
     gov_client: GovernanceClient, agents: list[dict],
 ) -> dict[str, dict]:
-    """Fetch EISV metrics for each agent."""
-    metrics: dict[str, dict] = {}
-    for agent in agents:
-        agent_id = agent["id"]
-        result = await gov_client.call_tool(
-            "get_governance_metrics", {"agent_id": agent_id},
-        )
-        if result is None:
-            continue
-        try:
-            data = _parse_tool_result(result)
-            if isinstance(data, list):
-                data = data[0] if data else {}
-            metrics[agent_id] = {
-                "E": data.get("E", data.get("entropy", 0.0)),
-                "I": data.get("I", data.get("integration", 0.0)),
-                "S": data.get("S", data.get("stability", 0.0)),
-                "V": data.get("V", data.get("volatility", 0.0)),
-                "verdict": data.get("verdict", "guide"),
-            }
-        except (json.JSONDecodeError, TypeError, KeyError) as exc:
-            log.warning("Failed to parse metrics for %s: %s", agent_id, exc)
-    return metrics
+    """Delegate to the shared fetch_metrics utility."""
+    return await _fetch_metrics_impl(gov_client, agents)

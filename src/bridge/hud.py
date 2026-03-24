@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -12,6 +11,7 @@ import discord
 from bridge.cache import BridgeCache
 from bridge.mcp_client import AnimaClient, GovernanceClient
 from bridge.tasks import create_logged_task
+from bridge.utils import fetch_agents, fetch_metrics
 
 log = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ DEFAULT_METRICS = {"E": 0.0, "I": 0.0, "S": 0.0, "V": 0.0, "verdict": "guide"}
 def build_hud_embed(
     agents: list[dict],
     metrics: dict[str, dict],
-    connection_status: dict[str, bool] | None = None,
+    connection_status: dict[str, bool | None] | None = None,
 ) -> discord.Embed:
     """Build a Discord embed summarising all active agents and their EISV metrics.
 
@@ -49,7 +49,12 @@ def build_hud_embed(
     if connection_status:
         parts = []
         for svc, ok in connection_status.items():
-            parts.append(f"{svc}: {'OK' if ok else 'DOWN'}")
+            # ok=None means no probe has been made yet (issue #10)
+            if ok is None:
+                label = "Unknown"
+            else:
+                label = "OK" if ok else "DOWN"
+            parts.append(f"{svc}: {label}")
         conn_line = " | ".join(parts) + "\n"
 
     if not agents:
@@ -110,6 +115,8 @@ class HUDUpdater:
         self.interval = interval
         self._task: asyncio.Task | None = None
         self._message: discord.Message | None = None
+        # Tri-state: None = not yet probed, True/False = last known status
+        self._gov_up: bool | None = None
 
     async def start(self) -> None:
         """Restore the HUD message from cache or create a new one, then start the loop."""
@@ -124,7 +131,8 @@ class HUDUpdater:
                 self._message = None
 
         if self._message is None:
-            embed = build_hud_embed([], {})
+            # Show "Unknown" for connection status until the first probe runs
+            embed = build_hud_embed([], {}, connection_status={"Governance": None})
             self._message = await self.hud_channel.send(embed=embed)
             await self.cache.set_hud_message(self.hud_channel.id, self._message.id)
             log.info("Created new HUD message %d", self._message.id)
@@ -139,70 +147,19 @@ class HUDUpdater:
     async def _update_loop(self) -> None:
         while True:
             try:
-                agents = await self._fetch_agents()
-                metrics = await self._fetch_metrics(agents)
-                conn = {
-                    "Governance": self.gov.consecutive_failures == 0,
-                }
+                # Consolidated fetch helpers from bridge.utils (issues #7, #9)
+                agents = await fetch_agents(self.gov)
+                metrics = await fetch_metrics(self.gov, agents)
+
+                # Update probed status *after* the fetch so we know the probe ran
+                self._gov_up = self.gov.consecutive_failures == 0
+                conn: dict[str, bool | None] = {"Governance": self._gov_up}
                 if self.anima is not None:
                     conn["Lumen"] = self.anima.is_online
+
                 embed = build_hud_embed(agents, metrics, connection_status=conn)
                 if self._message is not None:
                     await self._message.edit(embed=embed)
             except Exception as exc:
                 log.error("HUD update error: %s", exc)
             await asyncio.sleep(self.interval)
-
-    async def _fetch_agents(self) -> list[dict]:
-        """Call list_agents via governance MCP and return list of agent dicts."""
-        result = await self.gov.call_tool("list_agents", {})
-        if result is None:
-            return []
-        try:
-            # MCP wraps: result["result"]["content"][0]["text"] is a JSON string
-            inner = result.get("result", result)
-            content = inner.get("content", [])
-            if content:
-                text = content[0].get("text", "[]")
-                data = json.loads(text)
-            else:
-                data = inner if isinstance(inner, list) else []
-            # Normalise to list of {"id": ..., "label": ...}
-            agents = []
-            for item in data if isinstance(data, list) else [data]:
-                agent_id = item.get("agent_id") or item.get("id", "")
-                label = item.get("label") or item.get("name") or agent_id
-                agents.append({"id": agent_id, "label": label})
-            return agents
-        except (json.JSONDecodeError, TypeError, KeyError) as exc:
-            log.warning("Failed to parse list_agents response: %s", exc)
-            return []
-
-    async def _fetch_metrics(self, agents: list[dict]) -> dict[str, dict]:
-        """Call get_governance_metrics for each agent and return metrics dict."""
-        metrics: dict[str, dict] = {}
-        for agent in agents:
-            agent_id = agent["id"]
-            result = await self.gov.call_tool(
-                "get_governance_metrics", {"agent_id": agent_id}
-            )
-            if result is None:
-                continue
-            try:
-                inner = result.get("result", result)
-                content = inner.get("content", [])
-                if content:
-                    text = content[0].get("text", "{}")
-                    data = json.loads(text)
-                else:
-                    data = inner if isinstance(inner, dict) else {}
-                metrics[agent_id] = {
-                    "E": data.get("E", data.get("entropy", 0.0)),
-                    "I": data.get("I", data.get("integration", 0.0)),
-                    "S": data.get("S", data.get("stability", 0.0)),
-                    "V": data.get("V", data.get("volatility", 0.0)),
-                    "verdict": data.get("verdict", "guide"),
-                }
-            except (json.JSONDecodeError, TypeError, KeyError) as exc:
-                log.warning("Failed to parse metrics for %s: %s", agent_id, exc)
-        return metrics

@@ -73,12 +73,14 @@ class LumenPoller:
         art_channel: discord.TextChannel,
         sensor_channel: discord.TextChannel,
         sensor_interval: int = 300,
+        drawing_interval: int = 60,  # was hardcoded; now configurable (issue #11)
     ) -> None:
         self.anima = anima_client
         self.stream_channel = stream_channel
         self.art_channel = art_channel
         self.sensor_channel = sensor_channel
         self.sensor_interval = sensor_interval
+        self.drawing_interval = drawing_interval
         self._last_drawing: str | None = None
         self._was_offline: bool = False
         self._sensor_task: asyncio.Task | None = None
@@ -159,4 +161,4 @@ class LumenPoller:
                             await self.art_channel.send(embed=embed)
             except Exception as exc:
                 log.error("Drawing loop error: %s", exc)
-            await asyncio.sleep(60)
+            await asyncio.sleep(self.drawing_interval)

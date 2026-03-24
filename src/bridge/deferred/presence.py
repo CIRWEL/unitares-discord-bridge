@@ -121,6 +121,59 @@ class PresenceManager:
         await ch.send(embed=embed)
 
     async def _cleanup_loop(self) -> None:
-        """Periodic cleanup -- placeholder for idle channel archival."""
+        """Evict the least-recently-active agent channel when at capacity.
+
+        Previously a no-op stub (issue #5).  Now: when the AGENTS category
+        holds MAX_AGENT_CHANNELS or more channels, delete the one whose
+        last_message_id is oldest (proxy for least-recently-active) and
+        remove its entry from the cache so the slot can be reused.
+        """
         while True:
             await asyncio.sleep(self.interval * 10)
+            try:
+                channels = [
+                    ch for ch in self.agents_category.channels
+                    if isinstance(ch, discord.TextChannel)
+                ]
+                if len(channels) < self.MAX_AGENT_CHANNELS:
+                    continue  # Nothing to evict
+
+                # Sort ascending by last_message_id; None sorts to front (oldest)
+                oldest = min(channels, key=lambda ch: ch.last_message_id or 0)
+                log.info(
+                    "Agent channel limit reached (%d/%d), evicting #%s",
+                    len(channels), self.MAX_AGENT_CHANNELS, oldest.name,
+                )
+                await oldest.delete(
+                    reason="presence cleanup: evicting least-recently-active agent channel"
+                )
+                await self.cache.delete_agent_channel_by_channel_id(oldest.id)
+            except Exception as exc:
+                log.error("Presence cleanup error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Extension entry point (issue #1 — extensions.py requires this)
+# ---------------------------------------------------------------------------
+
+async def setup(ctx) -> "PresenceManager":  # ctx: ExtensionContext
+    """Create and return a PresenceManager, creating the AGENTS category if needed."""
+    from bridge.extensions import ExtensionContext
+    assert isinstance(ctx, ExtensionContext)
+
+    # Find or create the AGENTS category for per-agent channels
+    category = discord.utils.get(ctx.guild.categories, name="AGENTS")
+    if category is None:
+        category = await ctx.guild.create_category("AGENTS")
+        log.info("Created AGENTS category")
+
+    # Use the events channel as the lobby for new-agent announcements
+    lobby = ctx.channels.get("events")
+
+    return PresenceManager(
+        gov_client=ctx.gov_client,
+        cache=ctx.cache,
+        guild=ctx.guild,
+        agents_category=category,
+        lobby_channel=lobby,
+    )

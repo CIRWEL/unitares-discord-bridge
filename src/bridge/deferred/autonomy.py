@@ -7,7 +7,6 @@ All autonomous actions are logged to #audit-log.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -16,6 +15,7 @@ import discord
 from bridge.mcp_client import GovernanceClient
 from bridge.cache import BridgeCache
 from bridge.tasks import create_logged_task
+from bridge.utils import parse_tool_result as _parse_tool_result_util
 
 log = logging.getLogger(__name__)
 
@@ -106,15 +106,10 @@ def build_audit_action_embed(
 # ---------------------------------------------------------------------------
 
 
+# Consolidated to bridge.utils (issue #7); kept as a local alias for the
+# existing call-sites in this module.
 def _parse_tool_result(result: dict | None) -> dict | list:
-    """Unwrap the MCP tool result envelope."""
-    if result is None:
-        return {}
-    content = result.get("result", {}).get("content", [])
-    if content:
-        text = content[0].get("text", "{}")
-        return json.loads(text)
-    return {}
+    return _parse_tool_result_util(result)
 
 
 def _is_recovered(eisv: dict) -> bool:
@@ -341,3 +336,19 @@ class AutonomyEngine:
             await self.audit_channel.send(embed=embed)
         except discord.HTTPException as exc:
             log.warning("Failed to send audit embed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Extension entry point (issue #1 — extensions.py requires this)
+# ---------------------------------------------------------------------------
+
+async def setup(ctx) -> "AutonomyEngine":  # ctx: ExtensionContext
+    """Create and return an AutonomyEngine wired to ctx."""
+    from bridge.extensions import ExtensionContext  # avoid circular at import time
+    assert isinstance(ctx, ExtensionContext)
+    return AutonomyEngine(
+        gov_client=ctx.gov_client,
+        cache=ctx.cache,
+        alerts_channel=ctx.channels.get("alerts"),
+        audit_channel=ctx.channels.get("audit-log"),
+    )

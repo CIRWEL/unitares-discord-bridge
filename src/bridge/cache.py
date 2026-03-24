@@ -82,6 +82,18 @@ class BridgeCache:
         )
         await self._db.commit()
 
+    async def delete_agent_channel_by_channel_id(self, channel_id: int) -> None:
+        """Remove the cache entry for a Discord channel that has been deleted.
+
+        Used by PresenceManager._cleanup_loop when evicting old agent channels.
+        """
+        assert self._db is not None
+        await self._db.execute(
+            "DELETE FROM agent_channels WHERE channel_id = ?",
+            (channel_id,),
+        )
+        await self._db.commit()
+
     # -- HUD message ---------------------------------------------------------
 
     async def get_hud_message(self) -> tuple[int, int] | None:
