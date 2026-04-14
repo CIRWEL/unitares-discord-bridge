@@ -10,7 +10,6 @@ from bridge.config import (
     DISCORD_TOKEN, GUILD_ID, GOVERNANCE_URL, ANIMA_URL,
     GOVERNANCE_TOKEN, ANIMA_TOKEN,
     EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL, DB_PATH,
-    BRIDGE_EXTENSIONS,
 )
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient, AnimaClient
@@ -19,7 +18,6 @@ from bridge.event_poller import EventPoller
 from bridge.hud import HUDUpdater
 from bridge.lumen import LumenPoller
 from bridge.commands import setup_commands
-from bridge.extensions import Extension, ExtensionContext, load_extensions
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,9 +25,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("bridge")
 
+
+class BridgeBot(commands.Bot):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._shutdown_started = False
+
+    async def close(self) -> None:
+        if not self._shutdown_started:
+            self._shutdown_started = True
+            await shutdown_bridge()
+        await super().close()
+
+
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = BridgeBot(command_prefix="!", intents=intents)
 
 gov_client = GovernanceClient(GOVERNANCE_URL, token=GOVERNANCE_TOKEN)
 anima_client = AnimaClient(ANIMA_URL, token=ANIMA_TOKEN)
@@ -39,13 +50,12 @@ event_poller: EventPoller | None = None
 hud_updater: HUDUpdater | None = None
 lumen_poller: LumenPoller | None = None
 audit_channel: discord.TextChannel | None = None
-_extensions: list[Extension] = []
 _initialized: bool = False
 
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, lumen_poller, audit_channel, _extensions, _initialized
+    global cache, event_poller, hud_updater, lumen_poller, audit_channel, _initialized
 
     if _initialized:
         log.info("Reconnected as %s (skipping re-init)", bot.user)
@@ -91,13 +101,12 @@ async def on_ready():
         await hud_updater.start()
         log.info("HUD updater started")
 
-    # Start the Lumen poller if all three channels exist
-    stream_ch = channels.get("lumen-stream")
+    # Start the Lumen poller if both channels exist
     art_ch = channels.get("lumen-art")
     sensor_ch = channels.get("lumen-sensors")
-    if stream_ch and art_ch and sensor_ch:
+    if art_ch and sensor_ch:
         lumen_poller = LumenPoller(
-            anima_client, stream_ch, art_ch, sensor_ch, SENSOR_POLL_INTERVAL,
+            anima_client, art_ch, sensor_ch, SENSOR_POLL_INTERVAL,
         )
         await lumen_poller.start()
         log.info("Lumen poller started")
@@ -109,24 +118,9 @@ async def on_ready():
     except Exception as exc:
         log.error("Failed to sync command tree: %s", exc)
 
-    # Load deferred extensions if configured
-    if BRIDGE_EXTENSIONS:
-        ctx = ExtensionContext(
-            guild=guild,
-            channels=channels,
-            gov_client=gov_client,
-            anima_client=anima_client,
-            cache=cache,
-            bot=bot,
-        )
-        _extensions = await load_extensions(BRIDGE_EXTENSIONS, ctx)
-        log.info("Extensions loaded: %d of %d", len(_extensions), len(BRIDGE_EXTENSIONS))
-
     # Post startup message to audit log
     if audit_channel:
         active = [n for n, c in [("events", event_poller), ("HUD", hud_updater), ("Lumen", lumen_poller)] if c]
-        if _extensions:
-            active.append(f"{len(_extensions)} extensions")
         embed = discord.Embed(
             title="Bridge Online",
             description=f"Systems active: {', '.join(active) or 'none'}",
@@ -143,9 +137,9 @@ async def on_ready():
     log.info("All systems ready — events, HUD, Lumen, commands active")
 
 
-@bot.event
-async def on_close():
+async def shutdown_bridge() -> None:
     """Graceful shutdown: stop all background tasks and close the cache."""
+    global cache, event_poller, hud_updater, lumen_poller, audit_channel, _initialized
     log.info("Shutting down bridge...")
 
     # Post shutdown message while connection is still alive
@@ -160,13 +154,6 @@ async def on_close():
             await audit_channel.send(embed=embed)
         except Exception:
             pass  # Best-effort — connection may already be closing
-
-    # Stop extensions first (they may depend on core pollers)
-    for ext in _extensions:
-        try:
-            await ext.stop()
-        except Exception as exc:
-            log.warning("Error stopping extension: %s", exc)
 
     # Stop all background pollers
     for name, component in [
@@ -192,6 +179,13 @@ async def on_close():
     # Close persistent HTTP clients
     await gov_client.close()
     await anima_client.close()
+
+    cache = None
+    event_poller = None
+    hud_updater = None
+    lumen_poller = None
+    audit_channel = None
+    _initialized = False
 
     log.info("Shutdown complete")
 

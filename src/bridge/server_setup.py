@@ -17,7 +17,6 @@ CHANNEL_STRUCTURE: dict[str, dict[str, dict[str, str]]] = {
         "governance-hud": {"type": "text", "topic": "Auto-updating system status"},
     },
     "LUMEN": {
-        "lumen-stream": {"type": "text", "topic": "Lumen's inner voice and presence"},
         "lumen-art": {"type": "text", "topic": "Lumen's drawings"},
         "lumen-sensors": {"type": "text", "topic": "Environmental sensor readings"},
     },
@@ -28,6 +27,7 @@ CHANNEL_STRUCTURE: dict[str, dict[str, dict[str, str]]] = {
 }
 
 ROLES: dict[str, discord.Colour] = {
+    "Governance Admin": discord.Colour.dark_teal(),
     "observer": discord.Colour.light_grey(),
     "lumen": discord.Colour.blue(),
 }

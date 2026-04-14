@@ -23,14 +23,6 @@ async def test_event_cursor_set_and_get(cache):
 
 
 @pytest.mark.asyncio
-async def test_channel_mapping(cache):
-    async with cache:
-        await cache.set_agent_channel("agent-123", 98765)
-        assert await cache.get_agent_channel("agent-123") == 98765
-        assert await cache.get_agent_channel("nonexistent") is None
-
-
-@pytest.mark.asyncio
 async def test_hud_message(cache):
     async with cache:
         await cache.set_hud_message(111, 222)

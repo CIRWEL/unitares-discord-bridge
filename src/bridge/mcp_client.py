@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -102,6 +103,106 @@ class GovernanceClient:
         finally:
             if self._client is None:
                 await client.aclose()
+
+
+def parse_tool_result(result: dict) -> dict | list:
+    """Unwrap the MCP tool result envelope.
+
+    Supports two shapes:
+    - Legacy MCP: result["result"]["content"][0]["text"] is a JSON string
+    - Direct: result["result"] is the data dict/list itself
+    """
+    inner = result.get("result", {})
+    if isinstance(inner, dict):
+        content = inner.get("content")
+        if content:
+            text = content[0].get("text", "{}")
+            return json.loads(text)
+    return inner
+
+
+def _scalar(value) -> float:
+    """Coerce a value that may be a number or {"value": N, ...} dict to float."""
+    if isinstance(value, dict):
+        value = value.get("value", 0.0)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _derive_verdict(data: dict) -> str:
+    """Derive a HUD verdict (proceed/guide/pause/reject) from metric response.
+
+    Prefers an explicit ``verdict`` field; otherwise maps from basin + risk_score.status.
+    """
+    verdict = data.get("verdict")
+    if isinstance(verdict, str) and verdict:
+        return verdict
+
+    risk = data.get("risk_score", {})
+    risk_status = risk.get("status", "").lower() if isinstance(risk, dict) else ""
+    basin = str(data.get("basin", "")).lower()
+
+    if "high" in risk_status or basin == "low":
+        return "pause"
+    if "medium" in risk_status or "moderate" in risk_status:
+        return "guide"
+    if basin == "high":
+        return "proceed"
+    return "guide"
+
+
+async def fetch_agents(gov_client: "GovernanceClient") -> list[dict]:
+    """Call list_agents and return normalised list of {"id": ..., "label": ...}."""
+    result = await gov_client.call_tool("list_agents", {})
+    if result is None:
+        return []
+    try:
+        data = parse_tool_result(result)
+        if isinstance(data, dict):
+            items = data.get("agents", [])
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+        agents = []
+        for item in items:
+            agent_id = item.get("agent_id") or item.get("id", "")
+            label = item.get("label") or item.get("name") or agent_id
+            agents.append({"id": agent_id, "label": label})
+        return agents
+    except (json.JSONDecodeError, TypeError, KeyError) as exc:
+        log.warning("Failed to parse list_agents: %s", exc)
+        return []
+
+
+async def fetch_metrics(
+    gov_client: "GovernanceClient", agents: list[dict],
+) -> dict[str, dict]:
+    """Fetch EISV metrics for each agent. Returns {agent_id: {E, I, S, V, verdict}}."""
+    metrics: dict[str, dict] = {}
+    for agent in agents:
+        agent_id = agent["id"]
+        result = await gov_client.call_tool(
+            "get_governance_metrics", {"agent_id": agent_id},
+        )
+        if result is None:
+            continue
+        try:
+            data = parse_tool_result(result)
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            metrics[agent_id] = {
+                "E": _scalar(data.get("E", data.get("entropy", 0.0))),
+                "I": _scalar(data.get("I", data.get("integration", 0.0))),
+                "S": _scalar(data.get("S", data.get("stability", 0.0))),
+                "V": _scalar(data.get("V", data.get("volatility", 0.0))),
+                "verdict": _derive_verdict(data),
+            }
+        except (json.JSONDecodeError, TypeError, KeyError) as exc:
+            log.warning("Failed to parse metrics for %s: %s", agent_id, exc)
+    return metrics
 
 
 class AnimaClient:

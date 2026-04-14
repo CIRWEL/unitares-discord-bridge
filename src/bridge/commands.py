@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
 
-from bridge.mcp_client import GovernanceClient, AnimaClient
+from bridge.mcp_client import GovernanceClient, AnimaClient, parse_tool_result, fetch_agents, fetch_metrics
 
 log = logging.getLogger(__name__)
 
@@ -123,13 +122,6 @@ def _verdict_colour(verdict: str) -> discord.Colour:
     }.get(verdict, discord.Colour.greyple())
 
 
-def _parse_tool_result(result: dict) -> dict | list:
-    """Unwrap the MCP tool result envelope."""
-    content = result.get("result", {}).get("content", [])
-    if content:
-        text = content[0].get("text", "{}")
-        return json.loads(text)
-    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +141,8 @@ def setup_commands(
     async def cmd_status(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
         try:
-            agents = await _fetch_agents(gov_client)
-            metrics = await _fetch_metrics(gov_client, agents)
+            agents = await fetch_agents(gov_client)
+            metrics = await fetch_metrics(gov_client, agents)
             embed = build_status_embed(agents, metrics)
             await interaction.followup.send(embed=embed)
         except Exception as exc:
@@ -172,7 +164,7 @@ def setup_commands(
                     embed=_error_embed(f"Agent '{name}' not found or governance unavailable."),
                 )
                 return
-            data = _parse_tool_result(result)
+            data = parse_tool_result(result)
             if isinstance(data, list):
                 data = data[0] if data else {}
             agent_id = data.get("agent_id") or data.get("id") or name
@@ -205,6 +197,21 @@ def setup_commands(
     @tree.command(name="resume", description="Resume a paused agent")
     @app_commands.describe(agent="Agent ID to resume")
     async def cmd_resume(interaction: discord.Interaction, agent: str) -> None:
+        # Guard: only users with Manage Server permission or the 'Governance Admin'
+        # role may resume agents.  Check before deferring so we can send ephemeral.
+        has_permission = interaction.permissions.manage_guild or any(
+            r.name == "Governance Admin"
+            for r in getattr(interaction.user, "roles", [])
+        )
+        if not has_permission:
+            await interaction.response.send_message(
+                embed=_error_embed(
+                    "You need the **Governance Admin** role or **Manage Server** "
+                    "permission to resume agents."
+                ),
+                ephemeral=True,
+            )
+            return
         await interaction.response.defer()
         try:
             result = await gov_client.call_tool(
@@ -215,7 +222,7 @@ def setup_commands(
                     embed=_error_embed(f"Failed to resume agent '{agent}'."),
                 )
                 return
-            data = _parse_tool_result(result)
+            data = parse_tool_result(result)
             if isinstance(data, list):
                 data = data[0] if data else {}
             embed = build_resume_embed(agent, data)
@@ -254,52 +261,3 @@ def _error_embed(message: str) -> discord.Embed:
     )
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers (shared with HUDUpdater pattern)
-# ---------------------------------------------------------------------------
-
-async def _fetch_agents(gov_client: GovernanceClient) -> list[dict]:
-    """Call list_agents and normalise response."""
-    result = await gov_client.call_tool("list_agents", {})
-    if result is None:
-        return []
-    try:
-        data = _parse_tool_result(result)
-        agents = []
-        items = data if isinstance(data, list) else [data]
-        for item in items:
-            agent_id = item.get("agent_id") or item.get("id", "")
-            label = item.get("label") or item.get("name") or agent_id
-            agents.append({"id": agent_id, "label": label})
-        return agents
-    except (json.JSONDecodeError, TypeError, KeyError) as exc:
-        log.warning("Failed to parse list_agents: %s", exc)
-        return []
-
-
-async def _fetch_metrics(
-    gov_client: GovernanceClient, agents: list[dict],
-) -> dict[str, dict]:
-    """Fetch EISV metrics for each agent."""
-    metrics: dict[str, dict] = {}
-    for agent in agents:
-        agent_id = agent["id"]
-        result = await gov_client.call_tool(
-            "get_governance_metrics", {"agent_id": agent_id},
-        )
-        if result is None:
-            continue
-        try:
-            data = _parse_tool_result(result)
-            if isinstance(data, list):
-                data = data[0] if data else {}
-            metrics[agent_id] = {
-                "E": data.get("E", data.get("entropy", 0.0)),
-                "I": data.get("I", data.get("integration", 0.0)),
-                "S": data.get("S", data.get("stability", 0.0)),
-                "V": data.get("V", data.get("volatility", 0.0)),
-                "verdict": data.get("verdict", "guide"),
-            }
-        except (json.JSONDecodeError, TypeError, KeyError) as exc:
-            log.warning("Failed to parse metrics for %s: %s", agent_id, exc)
-    return metrics

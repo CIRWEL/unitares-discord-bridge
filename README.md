@@ -1,14 +1,13 @@
 # UNITARES Discord Bridge
 
-Discord bot that surfaces UNITARES governance events, agent presence, Lumen's state, and autonomous governance actions as a living Discord server.
+Discord bot that surfaces UNITARES governance events and Lumen state in Discord.
 
 ## What It Does
 
 - **Governance events** — Check-ins, verdicts, dialectic sessions
-- **Agent presence** — Who's active, EISV state
 - **Lumen state** — Sensor readings, creature status from the embodied agent
 - **HUD updates** — Live status channels
-- **Deferred extensions** — Autonomy, polls, resonance, dialectic, knowledge, presence
+- **Slash commands** — Status, health, resume, and Lumen snapshots
 
 ## Prerequisites
 

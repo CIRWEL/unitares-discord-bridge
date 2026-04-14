@@ -10,7 +10,7 @@ import discord
 from bridge.cache import BridgeCache
 from bridge.embeds import event_to_embed, is_critical_event
 from bridge.mcp_client import GovernanceClient
-from bridge.tasks import create_logged_task
+from bridge.tasks import cancel_tasks, create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -47,9 +47,7 @@ class EventPoller:
 
     async def stop(self) -> None:
         """Cancel both background tasks."""
-        for task in (self._task, self._send_task):
-            if task:
-                task.cancel()
+        await cancel_tasks(self._task, self._send_task)
 
     async def _poll_loop(self) -> None:
         while True:
@@ -87,6 +85,22 @@ class EventPoller:
             channel, embed = await self._message_queue.get()
             try:
                 await channel.send(embed=embed)
+            except discord.RateLimited as exc:
+                # Raised when max_ratelimit_timeout is set and the retry-after exceeds it.
+                # Respect Discord's back-off and re-queue rather than dropping the message.
+                log.warning("Global rate limit hit; retrying in %.1fs", exc.retry_after)
+                await asyncio.sleep(exc.retry_after)
+                await self._message_queue.put((channel, embed))
             except discord.HTTPException as exc:
-                log.warning("Discord send failed: %s", exc)
+                if exc.status == 429:
+                    # Per-route 429 that discord.py's internal limiter did not absorb.
+                    # Parse Retry-After from the response headers, fall back to 5 s.
+                    retry_after = float(exc.response.headers.get("Retry-After", 5))
+                    log.warning("Rate limited (HTTP 429); retrying in %.1fs", retry_after)
+                    await asyncio.sleep(retry_after)
+                    await self._message_queue.put((channel, embed))
+                else:
+                    log.warning("Discord send failed: %s", exc)
+            # 150 ms pacing between sends to stay well under Discord's per-route burst
+            # limit — this is not a retry delay; rate limit retries are handled above.
             await asyncio.sleep(0.15)

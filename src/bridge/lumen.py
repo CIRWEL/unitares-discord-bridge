@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import discord
 
 from bridge.mcp_client import AnimaClient
-from bridge.tasks import create_logged_task
+from bridge.tasks import cancel_tasks, create_logged_task
 
 log = logging.getLogger(__name__)
 
@@ -69,13 +69,11 @@ class LumenPoller:
     def __init__(
         self,
         anima_client: AnimaClient,
-        stream_channel: discord.TextChannel,
         art_channel: discord.TextChannel,
         sensor_channel: discord.TextChannel,
         sensor_interval: int = 300,
     ) -> None:
         self.anima = anima_client
-        self.stream_channel = stream_channel
         self.art_channel = art_channel
         self.sensor_channel = sensor_channel
         self.sensor_interval = sensor_interval
@@ -98,9 +96,7 @@ class LumenPoller:
 
     async def stop(self) -> None:
         """Cancel both background tasks."""
-        for task in (self._sensor_task, self._drawing_task):
-            if task:
-                task.cancel()
+        await cancel_tasks(self._sensor_task, self._drawing_task)
 
     # -- Sensor loop --------------------------------------------------------
 

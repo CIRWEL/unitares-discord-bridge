@@ -10,10 +10,12 @@ from bridge.commands import (
     build_health_embed,
     build_resume_embed,
     build_lumen_embed,
-    _parse_tool_result,
-    _fetch_agents,
-    _fetch_metrics,
     _error_embed,
+)
+from bridge.mcp_client import (
+    parse_tool_result as _parse_tool_result,
+    fetch_agents as _fetch_agents,
+    fetch_metrics as _fetch_metrics,
 )
 
 

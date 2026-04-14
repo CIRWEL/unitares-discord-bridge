@@ -32,10 +32,6 @@ class BridgeCache:
                 key   TEXT PRIMARY KEY,
                 value TEXT
             );
-            CREATE TABLE IF NOT EXISTS agent_channels (
-                agent_id   TEXT PRIMARY KEY,
-                channel_id INTEGER
-            );
             """
         )
 
@@ -57,28 +53,6 @@ class BridgeCache:
             "INSERT INTO kv (key, value) VALUES ('event_cursor', ?)"
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (str(cursor),),
-        )
-        await self._db.commit()
-
-    # -- agent channels ------------------------------------------------------
-
-    async def get_agent_channel(self, agent_id: str) -> int | None:
-        """Look up the Discord channel ID for an agent, or None."""
-        assert self._db is not None
-        async with self._db.execute(
-            "SELECT channel_id FROM agent_channels WHERE agent_id = ?",
-            (agent_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        return int(row[0]) if row else None
-
-    async def set_agent_channel(self, agent_id: str, channel_id: int) -> None:
-        """Upsert the channel mapping for an agent."""
-        assert self._db is not None
-        await self._db.execute(
-            "INSERT INTO agent_channels (agent_id, channel_id) VALUES (?, ?)"
-            " ON CONFLICT(agent_id) DO UPDATE SET channel_id = excluded.channel_id",
-            (agent_id, channel_id),
         )
         await self._db.commit()
 
