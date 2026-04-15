@@ -18,6 +18,7 @@ from bridge.event_poller import EventPoller
 from bridge.hud import HUDUpdater
 from bridge.lumen import LumenPoller
 from bridge.commands import setup_commands
+from bridge.ws_events import WSEventSubscriber
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +48,7 @@ anima_client = AnimaClient(ANIMA_URL, token=ANIMA_TOKEN)
 
 cache: BridgeCache | None = None
 event_poller: EventPoller | None = None
+ws_subscriber: WSEventSubscriber | None = None
 hud_updater: HUDUpdater | None = None
 lumen_poller: LumenPoller | None = None
 audit_channel: discord.TextChannel | None = None
@@ -55,7 +57,7 @@ _initialized: bool = False
 
 @bot.event
 async def on_ready():
-    global cache, event_poller, hud_updater, lumen_poller, audit_channel, _initialized
+    global cache, event_poller, ws_subscriber, hud_updater, lumen_poller, audit_channel, _initialized
 
     if _initialized:
         log.info("Reconnected as %s (skipping re-init)", bot.user)
@@ -91,6 +93,14 @@ async def on_ready():
         await event_poller.start()
         log.info("Event poller started")
 
+        # Also subscribe to the broadcaster WebSocket for typed governance
+        # events (lifecycle_*, knowledge_*, etc.) that the REST /api/events
+        # path does not surface. Runs in parallel; either can fail without
+        # taking the other down.
+        ws_subscriber = WSEventSubscriber(GOVERNANCE_URL, events_ch, alerts_ch)
+        await ws_subscriber.start()
+        log.info("WS event subscriber started")
+
     # Start the HUD updater if the channel exists
     hud_ch = channels.get("governance-hud")
     if hud_ch:
@@ -120,7 +130,7 @@ async def on_ready():
 
     # Post startup message to audit log
     if audit_channel:
-        active = [n for n, c in [("events", event_poller), ("HUD", hud_updater), ("Lumen", lumen_poller)] if c]
+        active = [n for n, c in [("events", event_poller), ("ws", ws_subscriber), ("HUD", hud_updater), ("Lumen", lumen_poller)] if c]
         embed = discord.Embed(
             title="Bridge Online",
             description=f"Systems active: {', '.join(active) or 'none'}",
@@ -139,7 +149,7 @@ async def on_ready():
 
 async def shutdown_bridge() -> None:
     """Graceful shutdown: stop all background tasks and close the cache."""
-    global cache, event_poller, hud_updater, lumen_poller, audit_channel, _initialized
+    global cache, event_poller, ws_subscriber, hud_updater, lumen_poller, audit_channel, _initialized
     log.info("Shutting down bridge...")
 
     # Post shutdown message while connection is still alive
@@ -158,6 +168,7 @@ async def shutdown_bridge() -> None:
     # Stop all background pollers
     for name, component in [
         ("event_poller", event_poller),
+        ("ws_subscriber", ws_subscriber),
         ("hud_updater", hud_updater),
         ("lumen_poller", lumen_poller),
     ]:
@@ -182,6 +193,7 @@ async def shutdown_bridge() -> None:
 
     cache = None
     event_poller = None
+    ws_subscriber = None
     hud_updater = None
     lumen_poller = None
     audit_channel = None
