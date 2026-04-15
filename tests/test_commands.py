@@ -8,6 +8,7 @@ from bridge.commands import (
     build_status_embed,
     build_agent_embed,
     build_health_embed,
+    build_kg_search_embed,
     build_resume_embed,
     build_lumen_embed,
     _error_embed,
@@ -228,3 +229,73 @@ def test_error_embed():
     assert embed.colour == discord.Colour.red()
     assert embed.title == "Error"
     assert embed.description == "Something went wrong"
+
+
+# ---------------------------------------------------------------------------
+# build_kg_search_embed
+# ---------------------------------------------------------------------------
+
+def test_kg_search_empty_results():
+    embed = build_kg_search_embed("nothing here", [])
+    assert embed.colour == discord.Colour.greyple()
+    assert "No discoveries" in embed.description
+    assert "nothing here" in embed.title
+
+
+def test_kg_search_single_result():
+    results = [{
+        "by": "Vigil",
+        "summary": "Governance recovered after brief outage",
+        "type": "note",
+        "tags": ["vigil", "recovery"],
+        "created_at": "2026-04-14T10:00:00+00:00",
+    }]
+    embed = build_kg_search_embed("recovery", results)
+    assert embed.colour == discord.Colour.blurple()
+    assert "1 result" in embed.title
+    field = embed.fields[0]
+    assert field.name == "Vigil"
+    assert "Governance recovered" in field.value
+    assert "2026-04-14" in field.value
+    assert "`vigil`" in field.value
+
+
+def test_kg_search_truncates_long_summaries():
+    long_summary = "A" * 900
+    results = [{"by": "agent", "summary": long_summary, "tags": []}]
+    embed = build_kg_search_embed("anything", results)
+    assert embed.fields[0].value.endswith("…")
+    assert len(embed.fields[0].value) <= 1024
+
+
+def test_kg_search_caps_at_five_with_footer():
+    results = [
+        {"by": f"agent-{i}", "summary": f"finding {i}", "tags": []}
+        for i in range(12)
+    ]
+    embed = build_kg_search_embed("many", results)
+    assert len(embed.fields) == 5
+    assert "12" in embed.footer.text
+
+
+def test_kg_search_handles_missing_fields():
+    results = [{}]
+    embed = build_kg_search_embed("x", results)
+    assert embed.fields[0].name == "unknown"
+    assert embed.fields[0].value == "—"
+
+
+def test_kg_search_plural_header_one_match():
+    results = [{"by": "a", "summary": "hi", "tags": []}]
+    embed = build_kg_search_embed("hi", results)
+    assert "1 result" in embed.title
+    assert "1 results" not in embed.title
+
+
+def test_kg_search_plural_header_two_matches():
+    results = [
+        {"by": "a", "summary": "hi", "tags": []},
+        {"by": "b", "summary": "there", "tags": []},
+    ]
+    embed = build_kg_search_embed("hi", results)
+    assert "2 results" in embed.title
