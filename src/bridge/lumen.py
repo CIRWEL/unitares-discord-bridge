@@ -79,6 +79,7 @@ class LumenPoller:
         self.sensor_interval = sensor_interval
         self._last_drawing: str | None = None
         self._was_offline: bool = False
+        self._sensor_msg: discord.Message | None = None
         self._sensor_task: asyncio.Task | None = None
         self._drawing_task: asyncio.Task | None = None
 
@@ -102,34 +103,46 @@ class LumenPoller:
 
     async def _sensor_loop(self) -> None:
         while True:
-            try:
-                state = await self.anima.fetch_state()
-                if state is None:
-                    # Lumen offline
-                    if not self._was_offline:
-                        embed = discord.Embed(
-                            title="Lumen Offline",
-                            colour=discord.Colour.dark_red(),
-                            timestamp=datetime.now(timezone.utc),
-                        )
-                        embed.description = "Unable to reach Lumen's sensor interface."
-                        await self.sensor_channel.send(embed=embed)
-                        self._was_offline = True
-                else:
-                    if self._was_offline:
-                        recovery = discord.Embed(
-                            title="Lumen Online",
-                            colour=discord.Colour.green(),
-                            timestamp=datetime.now(timezone.utc),
-                        )
-                        recovery.description = "Lumen's sensor interface is reachable again."
-                        await self.sensor_channel.send(embed=recovery)
-                    self._was_offline = False
-                    embed = build_sensor_embed(state)
-                    await self.sensor_channel.send(embed=embed)
-            except Exception as exc:
-                log.error("Sensor loop error: %s", exc)
+            await self._sensor_tick()
             await asyncio.sleep(self.sensor_interval)
+
+    async def _sensor_tick(self) -> None:
+        try:
+            state = await self.anima.fetch_state()
+            if state is None:
+                # Lumen offline — post a new message (not edit) so the
+                # transition is visible in channel history.
+                if not self._was_offline:
+                    embed = discord.Embed(
+                        title="Lumen Offline",
+                        colour=discord.Colour.dark_red(),
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    embed.description = "Unable to reach Lumen's sensor interface."
+                    await self.sensor_channel.send(embed=embed)
+                    self._was_offline = True
+                    self._sensor_msg = None
+            else:
+                if self._was_offline:
+                    recovery = discord.Embed(
+                        title="Lumen Online",
+                        colour=discord.Colour.green(),
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    recovery.description = "Lumen's sensor interface is reachable again."
+                    await self.sensor_channel.send(embed=recovery)
+                    self._sensor_msg = None
+                self._was_offline = False
+                embed = build_sensor_embed(state)
+                if self._sensor_msg is not None:
+                    try:
+                        await self._sensor_msg.edit(embed=embed)
+                    except discord.NotFound:
+                        self._sensor_msg = await self.sensor_channel.send(embed=embed)
+                else:
+                    self._sensor_msg = await self.sensor_channel.send(embed=embed)
+        except Exception as exc:
+            log.error("Sensor loop error: %s", exc)
 
     # -- Drawing loop -------------------------------------------------------
 

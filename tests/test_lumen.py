@@ -1,5 +1,9 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import discord
-from bridge.lumen import build_sensor_embed, build_drawing_embed
+import pytest
+
+from bridge.lumen import LumenPoller, build_sensor_embed, build_drawing_embed
 
 
 def test_sensor_embed():
@@ -38,3 +42,76 @@ def test_drawing_embed_manual():
         if "yes" in str(field.value).lower():
             found = True
     assert found
+
+
+# ---------------------------------------------------------------------------
+# Sensor loop edit-in-place tests
+# ---------------------------------------------------------------------------
+
+SAMPLE_STATE = {
+    "ambient_temp": 24.3, "humidity": 38.0, "pressure": 827.0,
+    "light": 142.0, "cpu_temp": 62.0, "memory_percent": 41.0,
+    "warmth": 0.7, "clarity": 0.6, "stability": 0.8, "presence": 0.5,
+    "neural": {"delta": 0.8, "theta": 0.3, "alpha": 0.6, "beta": 0.5, "gamma": 0.4},
+}
+
+
+def _make_poller():
+    anima = AsyncMock()
+    art_ch = AsyncMock(spec=discord.TextChannel)
+    sensor_ch = AsyncMock(spec=discord.TextChannel)
+    return LumenPoller(anima, art_ch, sensor_ch, sensor_interval=0), anima, sensor_ch
+
+
+@pytest.mark.asyncio
+async def test_sensor_loop_posts_once_then_edits():
+    """First poll sends a new message; second poll edits it."""
+    poller, anima, sensor_ch = _make_poller()
+    anima.fetch_state = AsyncMock(return_value=SAMPLE_STATE)
+
+    sent_msg = AsyncMock(spec=discord.Message)
+    sensor_ch.send = AsyncMock(return_value=sent_msg)
+
+    # Simulate first iteration (no existing message)
+    await poller._sensor_tick()
+    sensor_ch.send.assert_called_once()
+    assert poller._sensor_msg is sent_msg
+
+    # Simulate second iteration (should edit, not send)
+    sensor_ch.send.reset_mock()
+    await poller._sensor_tick()
+    sensor_ch.send.assert_not_called()
+    sent_msg.edit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sensor_loop_falls_back_on_not_found():
+    """If the pinned message was deleted, post a new one."""
+    poller, anima, sensor_ch = _make_poller()
+    anima.fetch_state = AsyncMock(return_value=SAMPLE_STATE)
+
+    stale_msg = AsyncMock(spec=discord.Message)
+    stale_msg.edit = AsyncMock(side_effect=discord.NotFound(MagicMock(), "gone"))
+    poller._sensor_msg = stale_msg
+
+    new_msg = AsyncMock(spec=discord.Message)
+    sensor_ch.send = AsyncMock(return_value=new_msg)
+
+    await poller._sensor_tick()
+    sensor_ch.send.assert_called_once()
+    assert poller._sensor_msg is new_msg
+
+
+@pytest.mark.asyncio
+async def test_sensor_loop_offline_clears_pinned_msg():
+    """Going offline posts a new message and clears _sensor_msg."""
+    poller, anima, sensor_ch = _make_poller()
+    anima.fetch_state = AsyncMock(return_value=None)
+
+    existing_msg = AsyncMock(spec=discord.Message)
+    poller._sensor_msg = existing_msg
+
+    await poller._sensor_tick()
+    assert poller._was_offline is True
+    assert poller._sensor_msg is None
+    sensor_ch.send.assert_called_once()
