@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
 
 from bridge.mcp_client import GovernanceClient, AnimaClient, parse_tool_result, fetch_agents, fetch_metrics
+from bridge.ws_events import recent_events, event_ring_size, resolve_violation_class
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +23,96 @@ def build_status_embed(agents: list[dict], metrics: dict[str, dict]) -> discord.
     """Build an EISV status overview embed for all agents."""
     from bridge.hud import build_hud_embed
     return build_hud_embed(agents, metrics)
+
+
+def build_digest_embed(
+    hours: int,
+    events: list[dict],
+    taxonomy_reverse: dict | None,
+    class_meta: dict[str, dict] | None = None,
+    ring_capacity: int | None = None,
+) -> discord.Embed:
+    """Aggregate broadcaster events over a recent window into a violation-class
+    summary embed.
+
+    Pure function — takes the events list + the taxonomy reverse-index and
+    builds the embed without any Discord or network I/O. Tested below without
+    a running bot.
+
+    The digest intentionally reports only in terms of violation classes (not
+    individual event types) because a per-type breakdown just duplicates the
+    main #events feed. The class rollup is the new signal.
+    """
+    class_meta = class_meta or {}
+
+    total = len(events)
+    by_class: Counter[str] = Counter()
+    unmapped = 0
+    severest: dict[str, tuple[str, dict]] = {}
+
+    # Severity rank for "top offender" per class.
+    severity_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0, "": 0}
+
+    for event in events:
+        cls = resolve_violation_class(event, taxonomy_reverse or {})
+        if cls:
+            by_class[cls] += 1
+            severity = event.get("severity") or (event.get("payload") or {}).get("severity") or ""
+            rank = severity_rank.get(severity, 0)
+            current = severest.get(cls)
+            current_rank = severity_rank.get((current[1].get("severity") if current else ""), 0) if current else -1
+            if rank > current_rank:
+                severest[cls] = (severity, event)
+        else:
+            unmapped += 1
+
+    colour = discord.Colour.blurple()
+    if any(severest.get(c, ("", {}))[0] == "critical" for c in severest):
+        colour = discord.Colour.red()
+    elif any(severest.get(c, ("", {}))[0] == "high" for c in severest):
+        colour = discord.Colour.orange()
+
+    if total == 0:
+        description = (
+            "No broadcaster events in the last "
+            f"{hours}h of bridge uptime."
+        )
+        embed = discord.Embed(
+            title=f"Violation digest · last {hours}h",
+            description=description,
+            colour=discord.Colour.greyple(),
+            timestamp=datetime.now(timezone.utc),
+        )
+        return embed
+
+    # One-line-per-class breakdown, sorted by count.
+    lines: list[str] = []
+    for cls_id, count in sorted(by_class.items(), key=lambda kv: -kv[1]):
+        cls_name = (class_meta.get(cls_id, {}) or {}).get("name") or cls_id
+        severity, top_event = severest.get(cls_id, ("", {}))
+        marker = f"  [{severity}]" if severity else ""
+        top_type = top_event.get("type") if isinstance(top_event, dict) else None
+        top_str = f"  — top: `{top_type}`" if top_type else ""
+        lines.append(f"**{cls_id}** · {cls_name}: **{count}**{marker}{top_str}")
+    if unmapped:
+        lines.append(f"_unclassified_: {unmapped}")
+
+    embed = discord.Embed(
+        title=f"Violation digest · last {hours}h",
+        description="\n".join(lines),
+        colour=colour,
+        timestamp=datetime.now(timezone.utc),
+    )
+    footer_parts = [f"{total} events"]
+    if ring_capacity is not None:
+        footer_parts.append(f"buffer {event_ring_size_for_footer(ring_capacity)} / {ring_capacity}")
+    embed.set_footer(text="  ·  ".join(footer_parts))
+    return embed
+
+
+def event_ring_size_for_footer(cap: int) -> int:
+    """Small shim so tests can inject ring size without importing ws_events."""
+    return event_ring_size()
 
 
 def build_kg_search_embed(query: str, results: list[dict]) -> discord.Embed:
@@ -342,6 +434,39 @@ def setup_commands(
             log.error("/kg error: %s", exc)
             await interaction.followup.send(
                 embed=_error_embed("Knowledge graph search failed."),
+            )
+
+    @tree.command(name="digest", description="Summarize recent broadcaster events by violation class")
+    @app_commands.describe(hours="Window in hours (1-24, default 1)")
+    async def cmd_digest(interaction: discord.Interaction, hours: int = 1) -> None:
+        await interaction.response.defer()
+        hours = max(1, min(int(hours), 24))
+        try:
+            # Fetch taxonomy lazily per invocation — low-frequency command,
+            # and this avoids the chicken-and-egg problem where commands are
+            # registered before the bot connects to governance. Best-effort:
+            # if the fetch fails, the digest still works but everything
+            # shows up as "unclassified".
+            tax = await gov_client.fetch_taxonomy()
+            reverse = (tax or {}).get("reverse") or {}
+            meta: dict[str, dict] = {}
+            if tax:
+                for cls in tax.get("classes") or []:
+                    if cls.get("id"):
+                        meta[cls["id"]] = cls
+            events = recent_events(hours * 3600)
+            embed = build_digest_embed(
+                hours=hours,
+                events=events,
+                taxonomy_reverse=reverse,
+                class_meta=meta,
+                ring_capacity=1000,
+            )
+            await interaction.followup.send(embed=embed)
+        except Exception as exc:
+            log.error("/digest error: %s", exc)
+            await interaction.followup.send(
+                embed=_error_embed("Failed to build digest."),
             )
 
     @tree.command(name="lumen", description="Current Lumen state and sensors")

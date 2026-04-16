@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Optional
+import time
+from collections import deque
+from typing import Iterable, Optional
 
 import discord
 import websockets
@@ -33,6 +35,39 @@ import websockets.exceptions
 from bridge.tasks import cancel_tasks, create_logged_task
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Process-local broadcaster-event ring buffer
+# ---------------------------------------------------------------------------
+# The bridge's WS subscriber receives every typed broadcaster event. Instead
+# of asking governance to replay them later, we retain the last ~1000 events
+# in-memory so slash commands like /digest can aggregate over a recent window.
+# Bounded size — oldest entries drop out automatically.
+
+_EVENT_RING_MAX = 1000
+_event_ring: "deque[tuple[float, dict]]" = deque(maxlen=_EVENT_RING_MAX)
+
+
+def record_event(event: dict) -> None:
+    """Append an event to the ring buffer with a wall-clock receive timestamp."""
+    _event_ring.append((time.time(), event))
+
+
+def recent_events(within_seconds: float) -> list[dict]:
+    """Return events received in the last ``within_seconds``, oldest first."""
+    cutoff = time.time() - within_seconds
+    return [evt for ts, evt in _event_ring if ts >= cutoff]
+
+
+def event_ring_size() -> int:
+    """Expose buffer size for tests + /digest reporting."""
+    return len(_event_ring)
+
+
+def _reset_event_ring_for_tests() -> None:
+    """Clear the ring buffer — tests only."""
+    _event_ring.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +298,12 @@ class WSEventSubscriber:
             delay = min(delay * 2, self.reconnect_max)
 
     async def _dispatch(self, event: dict) -> None:
+        # Record every typed event (including ones we don't turn into an
+        # embed) so /digest can aggregate them later. This is the single
+        # authoritative ingest point, so no other code needs to touch the
+        # ring buffer.
+        if event.get("type") and event.get("type") != "eisv_update":
+            record_event(event)
         embed = broadcaster_event_to_embed(event)
         if embed is None:
             return
