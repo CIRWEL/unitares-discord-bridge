@@ -38,3 +38,56 @@ def test_is_not_critical_for_proceed():
 
 def test_is_critical_for_critical_severity():
     assert is_critical_event({"type": "risk_threshold", "severity": "critical"})
+
+
+def test_sentinel_finding_embed():
+    event = {
+        "event_id": 42, "type": "sentinel_finding", "severity": "high",
+        "message": "3 agents drifting in lockstep",
+        "agent_id": "sentinel", "agent_name": "Sentinel",
+        "timestamp": "2026-04-15T12:00:00+00:00",
+        "violation_class": "BEH", "finding_type": "coordinated_degradation",
+    }
+    embed = event_to_embed(event)
+    assert embed.title == "Sentinel Finding"
+    assert embed.colour == discord.Colour.red()  # high → critical colour
+    field_names = [f.name for f in embed.fields]
+    assert "Violation" in field_names
+    assert "Finding" in field_names
+
+
+def test_vigil_finding_embed():
+    event = {
+        "event_id": 7, "type": "vigil_finding", "severity": "critical",
+        "message": "Governance is down",
+        "agent_id": "vigil", "agent_name": "Vigil",
+        "timestamp": "2026-04-15T12:00:00+00:00",
+        "finding_type": "governance_down",
+    }
+    embed = event_to_embed(event)
+    assert embed.title == "Vigil Finding"
+    assert embed.colour == discord.Colour.red()
+
+
+def test_watcher_finding_embed():
+    event = {
+        "event_id": 11, "type": "watcher_finding", "severity": "high",
+        "message": "[P011] /tmp/foo.py:42 — mutation before persistence",
+        "agent_id": "watcher", "agent_name": "Watcher",
+        "timestamp": "2026-04-15T12:00:00+00:00",
+        "pattern": "P011", "file": "/tmp/foo.py", "line": 42,
+        "violation_class": "INT",
+    }
+    embed = event_to_embed(event)
+    assert embed.title == "Watcher Finding"
+    field_names = [f.name for f in embed.fields]
+    assert "Pattern" in field_names
+    assert "Location" in field_names
+
+
+def test_finding_high_severity_routes_to_alerts():
+    # high severity = route to #alerts, not just #events
+    assert is_critical_event({"type": "sentinel_finding", "severity": "high"})
+    assert is_critical_event({"type": "watcher_finding", "severity": "critical"})
+    assert not is_critical_event({"type": "sentinel_finding", "severity": "info"})
+    assert not is_critical_event({"type": "watcher_finding", "severity": "medium"})
