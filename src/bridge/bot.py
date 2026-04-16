@@ -101,11 +101,13 @@ async def on_ready():
     # Start the event poller if both channels exist
     events_ch = channels.get("events")
     alerts_ch = channels.get("alerts")
+    residents_ch = channels.get("residents")
     audit_channel = channels.get("audit-log")
     if events_ch and alerts_ch:
         event_poller = EventPoller(
             gov_client, cache, events_ch, alerts_ch, EVENT_POLL_INTERVAL,
             audit_channel=audit_channel,
+            residents_channel=residents_ch,
         )
         await event_poller.start()
         log.info("Event poller started")

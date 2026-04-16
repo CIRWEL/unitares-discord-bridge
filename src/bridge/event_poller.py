@@ -26,6 +26,7 @@ class EventPoller:
         alerts_channel: discord.TextChannel,
         interval: int = 10,
         audit_channel: discord.TextChannel | None = None,
+        residents_channel: discord.TextChannel | None = None,
     ) -> None:
         self.gov = gov_client
         self.cache = cache
@@ -33,6 +34,7 @@ class EventPoller:
         self.alerts_channel = alerts_channel
         self.interval = interval
         self.audit_channel = audit_channel
+        self.residents_channel = residents_channel
         self._task: asyncio.Task | None = None
         self._send_task: asyncio.Task | None = None
         self._gov_alert_sent: bool = False
@@ -51,34 +53,41 @@ class EventPoller:
 
     async def _poll_loop(self) -> None:
         while True:
-            try:
-                cursor = await self.cache.get_event_cursor()
-                events = await self.gov.fetch_events(since=cursor)
-                for event in events:
-                    embed = event_to_embed(event)
-                    await self._message_queue.put((self.events_channel, embed))
-                    if is_critical_event(event):
-                        await self._message_queue.put((self.alerts_channel, embed))
-                if events:
-                    last_id = max(e.get("event_id", 0) for e in events)
-                    await self.cache.set_event_cursor(last_id)
-                if self.gov.consecutive_failures >= 3 and not self._gov_alert_sent:
-                    self._gov_alert_sent = True
-                    warn = discord.Embed(
-                        title="Governance MCP Unreachable",
-                        colour=discord.Colour.dark_red(),
-                    )
-                    await self._message_queue.put((self.alerts_channel, warn))
-                elif self.gov.consecutive_failures == 0 and self._gov_alert_sent:
-                    self._gov_alert_sent = False
-                    recovered = discord.Embed(
-                        title="Governance MCP Recovered",
-                        colour=discord.Colour.green(),
-                    )
-                    await self._message_queue.put((self.alerts_channel, recovered))
-            except Exception as exc:
-                log.error("Event poll error: %s", exc)
+            await self._poll_loop_once()
             await asyncio.sleep(self.interval)
+
+    async def _poll_loop_once(self) -> None:
+        try:
+            cursor = await self.cache.get_event_cursor()
+            events = await self.gov.fetch_events(since=cursor)
+            for event in events:
+                embed = event_to_embed(event)
+                is_finding = event.get("type", "").endswith("_finding")
+                if is_finding and self.residents_channel is not None:
+                    await self._message_queue.put((self.residents_channel, embed))
+                else:
+                    await self._message_queue.put((self.events_channel, embed))
+                if is_critical_event(event):
+                    await self._message_queue.put((self.alerts_channel, embed))
+            if events:
+                last_id = max(e.get("event_id", 0) for e in events)
+                await self.cache.set_event_cursor(last_id)
+            if self.gov.consecutive_failures >= 3 and not self._gov_alert_sent:
+                self._gov_alert_sent = True
+                warn = discord.Embed(
+                    title="Governance MCP Unreachable",
+                    colour=discord.Colour.dark_red(),
+                )
+                await self._message_queue.put((self.alerts_channel, warn))
+            elif self.gov.consecutive_failures == 0 and self._gov_alert_sent:
+                self._gov_alert_sent = False
+                recovered = discord.Embed(
+                    title="Governance MCP Recovered",
+                    colour=discord.Colour.green(),
+                )
+                await self._message_queue.put((self.alerts_channel, recovered))
+        except Exception as exc:
+            log.error("Event poll error: %s", exc)
 
     async def _send_loop(self) -> None:
         while True:
