@@ -37,13 +37,48 @@ ROLES: dict[str, discord.Colour] = {
 # Ensure everything exists
 # ---------------------------------------------------------------------------
 
+def _violation_class_channels(taxonomy: dict | None) -> dict[str, dict[str, str]]:
+    """Build a ``{channel_name: {type, topic}}`` mapping for each active
+    violation class in the taxonomy.
+
+    Channels are named ``gov-<class-id-lowercased>`` (e.g. ``gov-int``) so
+    operators can scan the channel list and mute or subscribe per class.
+    Topic includes the class name + description.
+    """
+    if not taxonomy:
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for cls in taxonomy.get("classes") or []:
+        if cls.get("status") != "active":
+            continue
+        cid = (cls.get("id") or "").lower()
+        if not cid:
+            continue
+        name = f"gov-{cid}"
+        topic_parts = [cls.get("name") or cid.upper()]
+        desc = (cls.get("description") or "").strip()
+        if desc:
+            topic_parts.append(desc)
+        out[name] = {
+            "type": "text",
+            "topic": " — ".join(topic_parts)[:1000],
+        }
+    return out
+
+
 async def ensure_server_structure(
     guild: discord.Guild,
+    taxonomy: dict | None = None,
 ) -> dict[str, discord.abc.GuildChannel]:
     """Ensure all required roles, categories, and channels exist in *guild*.
 
     Returns a mapping of ``channel_name -> channel`` for every channel in the
     structure (whether it already existed or was freshly created).
+
+    If ``taxonomy`` is provided, a ``VIOLATIONS`` category is created with one
+    text channel per active class (``gov-int``, ``gov-ent``, etc.) so the
+    ws_events subscriber can mirror class-matched events into class-specific
+    channels. Passing ``None`` skips the violations category entirely.
     """
 
     # ---- Roles -------------------------------------------------------------
@@ -57,7 +92,16 @@ async def ensure_server_structure(
     existing_categories = {c.name: c for c in guild.categories}
     channel_map: dict[str, discord.abc.GuildChannel] = {}
 
-    for category_name, channels in CHANNEL_STRUCTURE.items():
+    # Shallow-copy the structure so we can add a VIOLATIONS category for the
+    # current session without mutating module-level state.
+    structure: dict[str, dict[str, dict[str, str]]] = {
+        k: dict(v) for k, v in CHANNEL_STRUCTURE.items()
+    }
+    violation_channels = _violation_class_channels(taxonomy)
+    if violation_channels:
+        structure["VIOLATIONS"] = violation_channels
+
+    for category_name, channels in structure.items():
         # Ensure category exists
         category = existing_categories.get(category_name)
         if category is None:

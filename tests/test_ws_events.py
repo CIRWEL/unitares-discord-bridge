@@ -11,6 +11,7 @@ import discord
 from bridge.ws_events import (
     broadcaster_event_to_embed,
     is_critical_broadcaster_event,
+    resolve_violation_class,
     ws_url_from_http,
 )
 
@@ -277,3 +278,65 @@ def test_non_critical_by_default():
     assert not is_critical_broadcaster_event({"type": "knowledge_write"})
     assert not is_critical_broadcaster_event({"type": "lifecycle_resumed"})
     assert not is_critical_broadcaster_event({"type": "identity_drift"})
+
+
+# ---------------------------------------------------------------------------
+# resolve_violation_class — used for per-class channel routing
+# ---------------------------------------------------------------------------
+
+
+_SAMPLE_REVERSE = {
+    "broadcast_events": {
+        "identity_drift": "CON",
+        "knowledge_confidence_clamped": "INT",
+        "circuit_breaker_trip": "REC",
+    },
+    "watcher_patterns": {"P011": "INT"},
+    "sentinel_findings": {"coordinated_degradation": "CON"},
+}
+
+
+def test_explicit_violation_class_wins():
+    # Watcher writes knowledge_write events with violation_class on the
+    # payload directly — use it even if the event type isn't in the reverse
+    # lookup for broadcast_events.
+    cls = resolve_violation_class(
+        {"type": "knowledge_write", "violation_class": "ENT"},
+        _SAMPLE_REVERSE,
+    )
+    assert cls == "ENT"
+
+
+def test_resolves_via_reverse_lookup_when_no_explicit():
+    cls = resolve_violation_class(
+        {"type": "identity_drift"}, _SAMPLE_REVERSE
+    )
+    assert cls == "CON"
+
+
+def test_returns_none_when_no_mapping():
+    assert resolve_violation_class(
+        {"type": "some_future_event"}, _SAMPLE_REVERSE
+    ) is None
+
+
+def test_returns_none_when_reverse_is_none():
+    assert resolve_violation_class({"type": "identity_drift"}, None) is None
+
+
+def test_explicit_wins_even_over_reverse_conflict():
+    # Governance-declared reverse says INT, but Watcher asserts the write
+    # is CON — Watcher's explicit claim wins.
+    cls = resolve_violation_class(
+        {"type": "knowledge_confidence_clamped", "violation_class": "CON"},
+        _SAMPLE_REVERSE,
+    )
+    assert cls == "CON"
+
+
+def test_empty_reverse_still_checks_explicit():
+    cls = resolve_violation_class(
+        {"type": "knowledge_write", "violation_class": "REC"},
+        {},
+    )
+    assert cls == "REC"
