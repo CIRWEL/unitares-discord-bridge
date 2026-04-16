@@ -24,7 +24,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Optional
+import time
+from collections import deque
+from typing import Iterable, Optional
 
 import discord
 import websockets
@@ -33,6 +35,39 @@ import websockets.exceptions
 from bridge.tasks import cancel_tasks, create_logged_task
 
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Process-local broadcaster-event ring buffer
+# ---------------------------------------------------------------------------
+# The bridge's WS subscriber receives every typed broadcaster event. Instead
+# of asking governance to replay them later, we retain the last ~1000 events
+# in-memory so slash commands like /digest can aggregate over a recent window.
+# Bounded size — oldest entries drop out automatically.
+
+_EVENT_RING_MAX = 1000
+_event_ring: "deque[tuple[float, dict]]" = deque(maxlen=_EVENT_RING_MAX)
+
+
+def record_event(event: dict) -> None:
+    """Append an event to the ring buffer with a wall-clock receive timestamp."""
+    _event_ring.append((time.time(), event))
+
+
+def recent_events(within_seconds: float) -> list[dict]:
+    """Return events received in the last ``within_seconds``, oldest first."""
+    cutoff = time.time() - within_seconds
+    return [evt for ts, evt in _event_ring if ts >= cutoff]
+
+
+def event_ring_size() -> int:
+    """Expose buffer size for tests + /digest reporting."""
+    return len(_event_ring)
+
+
+def _reset_event_ring_for_tests() -> None:
+    """Clear the ring buffer — tests only."""
+    _event_ring.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +192,24 @@ def is_critical_broadcaster_event(event: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def resolve_violation_class(event: dict, taxonomy_reverse: Optional[dict]) -> Optional[str]:
+    """Map a broadcaster event to a violation class id using the taxonomy.
+
+    Precedence:
+    1. Explicit ``violation_class`` on the payload (Watcher emits this now).
+    2. Reverse-lookup by event type in ``broadcast_events``.
+
+    Returns the class id (e.g. ``"INT"``) or ``None`` if no mapping.
+    """
+    explicit = event.get("violation_class")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    if not taxonomy_reverse:
+        return None
+    t = event.get("type") or ""
+    return (taxonomy_reverse.get("broadcast_events") or {}).get(t)
+
+
 class WSEventSubscriber:
     """Subscribe to ``/ws/eisv``, dispatch typed events to Discord.
 
@@ -172,10 +225,18 @@ class WSEventSubscriber:
         reconnect_initial: float = 1.0,
         reconnect_max: float = 30.0,
         connect_kwargs: Optional[dict] = None,
+        class_channels: Optional[dict[str, discord.TextChannel]] = None,
+        taxonomy_reverse: Optional[dict] = None,
     ) -> None:
         self.ws_url = ws_url_from_http(governance_url)
         self.events_channel = events_channel
         self.alerts_channel = alerts_channel
+        # Per-class channels: {"INT": channel, "ENT": channel, ...}. When a
+        # matched event has a class in this map, it's ALSO posted to that
+        # channel (in addition to the main #events feed). Disabled by passing
+        # None or an empty dict.
+        self.class_channels = class_channels or {}
+        self.taxonomy_reverse = taxonomy_reverse or {}
         self.reconnect_initial = reconnect_initial
         self.reconnect_max = reconnect_max
         self._connect_kwargs = connect_kwargs or {
@@ -237,6 +298,12 @@ class WSEventSubscriber:
             delay = min(delay * 2, self.reconnect_max)
 
     async def _dispatch(self, event: dict) -> None:
+        # Record every typed event (including ones we don't turn into an
+        # embed) so /digest can aggregate them later. This is the single
+        # authoritative ingest point, so no other code needs to touch the
+        # ring buffer.
+        if event.get("type") and event.get("type") != "eisv_update":
+            record_event(event)
         embed = broadcaster_event_to_embed(event)
         if embed is None:
             return
@@ -254,6 +321,18 @@ class WSEventSubscriber:
                 self._send_queue.put_nowait((self.alerts_channel, embed))
             except asyncio.QueueFull:
                 pass
+        # Per-class mirror: when an event maps to a violation class and the
+        # bridge has a channel for it, post there too. This is the core value
+        # of class routing — operators can subscribe to a subset of classes
+        # without seeing every event in #events.
+        class_id = resolve_violation_class(event, self.taxonomy_reverse)
+        if class_id:
+            cls_channel = self.class_channels.get(class_id)
+            if cls_channel is not None:
+                try:
+                    self._send_queue.put_nowait((cls_channel, embed))
+                except asyncio.QueueFull:
+                    pass
 
     async def _send_loop(self) -> None:
         while not self._stop_event.is_set():

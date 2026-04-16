@@ -17,3 +17,13 @@ HUD_UPDATE_INTERVAL = int(os.environ.get("HUD_UPDATE_INTERVAL", "30"))
 SENSOR_POLL_INTERVAL = int(os.environ.get("SENSOR_POLL_INTERVAL", "300"))
 
 DB_PATH = os.environ.get("BRIDGE_DB_PATH", "data/bridge.db")
+
+# Per-class routing — when enabled, broadcaster events that map to a
+# violation class (via /v1/taxonomy reverse-lookup) are mirrored to a
+# class-specific text channel in addition to the main #events channel.
+# Lets operators subscribe to specific violation classes and mute the rest.
+# Disabled by default so existing deployments don't get new channels without
+# opt-in.
+CLASS_ROUTING_ENABLED = os.environ.get(
+    "BRIDGE_CLASS_ROUTING_ENABLED", ""
+).lower() in ("1", "true", "yes", "on")

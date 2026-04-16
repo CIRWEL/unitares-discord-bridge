@@ -10,6 +10,7 @@ from bridge.config import (
     DISCORD_TOKEN, GUILD_ID, GOVERNANCE_URL, ANIMA_URL,
     GOVERNANCE_TOKEN, ANIMA_TOKEN,
     EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL, DB_PATH,
+    CLASS_ROUTING_ENABLED,
 )
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient, AnimaClient
@@ -69,12 +70,28 @@ async def on_ready():
         log.error("Guild %d not found", GUILD_ID)
         return
 
-    channels = await ensure_server_structure(guild)
-    log.info("Server structure ready: %d channels", len(channels))
-
-    # Open persistent HTTP clients
+    # Open persistent HTTP clients before fetching the taxonomy so the HTTP
+    # client is ready (ensure_server_structure is Discord-only and doesn't
+    # need them).
     await gov_client.open()
     await anima_client.open()
+
+    # Fetch the violation taxonomy before creating channels so the VIOLATIONS
+    # category is populated (if class routing is enabled). Best-effort — a
+    # missing taxonomy just skips the violations category.
+    taxonomy = None
+    if CLASS_ROUTING_ENABLED:
+        taxonomy = await gov_client.fetch_taxonomy()
+        if taxonomy:
+            log.info(
+                "Class routing enabled — %d classes loaded from governance",
+                len(taxonomy.get("classes") or []),
+            )
+        else:
+            log.warning("Class routing enabled but taxonomy fetch failed")
+
+    channels = await ensure_server_structure(guild, taxonomy=taxonomy)
+    log.info("Server structure ready: %d channels", len(channels))
 
     # Open the SQLite cache for event cursors, HUD state, etc.
     os.makedirs(os.path.dirname(DB_PATH) or "data", exist_ok=True)
@@ -93,13 +110,38 @@ async def on_ready():
         await event_poller.start()
         log.info("Event poller started")
 
+        # Build the per-class channel map for the WS subscriber. Keys are
+        # class ids (e.g. "INT"), values are Discord TextChannel objects.
+        # Empty dict when class routing is disabled — subscriber falls back
+        # to posting to #events only.
+        class_channels: dict[str, discord.TextChannel] = {}
+        if taxonomy:
+            for cls in taxonomy.get("classes") or []:
+                if cls.get("status") != "active":
+                    continue
+                cid = cls.get("id")
+                if not cid:
+                    continue
+                ch = channels.get(f"gov-{cid.lower()}")
+                if ch is not None:
+                    class_channels[cid] = ch
+
         # Also subscribe to the broadcaster WebSocket for typed governance
         # events (lifecycle_*, knowledge_*, etc.) that the REST /api/events
         # path does not surface. Runs in parallel; either can fail without
         # taking the other down.
-        ws_subscriber = WSEventSubscriber(GOVERNANCE_URL, events_ch, alerts_ch)
+        ws_subscriber = WSEventSubscriber(
+            GOVERNANCE_URL,
+            events_ch,
+            alerts_ch,
+            class_channels=class_channels,
+            taxonomy_reverse=(taxonomy or {}).get("reverse") or {},
+        )
         await ws_subscriber.start()
-        log.info("WS event subscriber started")
+        log.info(
+            "WS event subscriber started (class routing: %s)",
+            f"{len(class_channels)} classes" if class_channels else "disabled",
+        )
 
     # Start the HUD updater if the channel exists
     hud_ch = channels.get("governance-hud")

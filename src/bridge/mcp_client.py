@@ -68,6 +68,28 @@ class GovernanceClient:
             if self._client is None:
                 await client.aclose()
 
+    async def fetch_taxonomy(self) -> dict | None:
+        """GET /v1/taxonomy. Returns None on error.
+
+        Response includes classes (list of class dicts) and reverse
+        (surface_kind → surface_id → class_id lookup table). Used by
+        ws_events for per-class channel routing.
+        """
+        client = self._get_client()
+        try:
+            resp = await client.get("/v1/taxonomy")
+            resp.raise_for_status()
+            data = resp.json()
+            if not data.get("success", True):
+                return None
+            return data
+        except Exception as exc:
+            log.warning("governance fetch_taxonomy failed: %s", exc)
+            return None
+        finally:
+            if self._client is None:
+                await client.aclose()
+
     async def fetch_health(self) -> dict | None:
         """GET /health. Returns None on error."""
         client = self._get_client()

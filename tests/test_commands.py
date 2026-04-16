@@ -7,6 +7,7 @@ import pytest
 from bridge.commands import (
     build_status_embed,
     build_agent_embed,
+    build_digest_embed,
     build_health_embed,
     build_kg_search_embed,
     build_resume_embed,
@@ -299,3 +300,149 @@ def test_kg_search_plural_header_two_matches():
     ]
     embed = build_kg_search_embed("hi", results)
     assert "2 results" in embed.title
+
+
+# ---------------------------------------------------------------------------
+# build_digest_embed — per-class aggregation
+# ---------------------------------------------------------------------------
+
+
+_DIGEST_REVERSE = {
+    "broadcast_events": {
+        "lifecycle_paused": "BEH",
+        "knowledge_confidence_clamped": "INT",
+        "circuit_breaker_trip": "REC",
+        "identity_drift": "CON",
+    }
+}
+_DIGEST_META = {
+    "INT": {"id": "INT", "name": "Integrity"},
+    "BEH": {"id": "BEH", "name": "Behavioral Consistency"},
+    "REC": {"id": "REC", "name": "Recoverability"},
+    "CON": {"id": "CON", "name": "Continuity"},
+}
+
+
+def test_digest_empty_window():
+    embed = build_digest_embed(hours=1, events=[], taxonomy_reverse=_DIGEST_REVERSE)
+    assert embed.colour == discord.Colour.greyple()
+    assert "No broadcaster events" in embed.description
+    assert "last 1h" in embed.title
+
+
+def test_digest_classifies_events_and_sorts_by_count():
+    events = [
+        {"type": "lifecycle_paused"},
+        {"type": "lifecycle_paused"},
+        {"type": "knowledge_confidence_clamped"},
+        {"type": "identity_drift"},
+    ]
+    embed = build_digest_embed(
+        hours=1,
+        events=events,
+        taxonomy_reverse=_DIGEST_REVERSE,
+        class_meta=_DIGEST_META,
+    )
+    # BEH has 2, INT and CON each have 1; BEH should be listed first.
+    desc = embed.description
+    beh_idx = desc.find("BEH")
+    int_idx = desc.find("INT")
+    con_idx = desc.find("CON")
+    assert beh_idx < int_idx
+    assert beh_idx < con_idx
+    assert "**BEH** · Behavioral Consistency: **2**" in desc
+    assert "**INT** · Integrity: **1**" in desc
+
+
+def test_digest_explicit_violation_class_overrides_reverse():
+    # Watcher's knowledge_write events carry violation_class directly.
+    events = [
+        {"type": "knowledge_write", "violation_class": "ENT"},
+        {"type": "knowledge_write", "violation_class": "ENT"},
+    ]
+    embed = build_digest_embed(
+        hours=1,
+        events=events,
+        taxonomy_reverse=_DIGEST_REVERSE,
+    )
+    assert "**ENT**" in embed.description
+    assert ": **2**" in embed.description
+
+
+def test_digest_counts_unmapped_events_separately():
+    events = [
+        {"type": "knowledge_confidence_clamped"},  # maps to INT
+        {"type": "some_brand_new_event_no_one_has_classified"},
+    ]
+    embed = build_digest_embed(
+        hours=1, events=events, taxonomy_reverse=_DIGEST_REVERSE,
+    )
+    assert "**INT**" in embed.description
+    assert "unclassified" in embed.description
+    assert ": 1" in embed.description
+
+
+def test_digest_colour_red_when_critical_present():
+    events = [
+        {"type": "lifecycle_paused", "severity": "critical"},
+    ]
+    embed = build_digest_embed(
+        hours=1, events=events, taxonomy_reverse=_DIGEST_REVERSE,
+    )
+    assert embed.colour == discord.Colour.red()
+
+
+def test_digest_colour_orange_when_high_but_no_critical():
+    events = [
+        {"type": "lifecycle_paused", "severity": "high"},
+    ]
+    embed = build_digest_embed(
+        hours=1, events=events, taxonomy_reverse=_DIGEST_REVERSE,
+    )
+    assert embed.colour == discord.Colour.orange()
+
+
+def test_digest_handles_none_reverse_gracefully():
+    events = [{"type": "lifecycle_paused"}]
+    embed = build_digest_embed(hours=1, events=events, taxonomy_reverse=None)
+    # Everything falls into unclassified — no crash.
+    assert "unclassified" in embed.description
+
+
+# ---------------------------------------------------------------------------
+# ws_events ring buffer (used by /digest)
+# ---------------------------------------------------------------------------
+
+
+def test_recent_events_filters_by_time():
+    from bridge.ws_events import (
+        record_event,
+        recent_events,
+        _reset_event_ring_for_tests,
+    )
+
+    _reset_event_ring_for_tests()
+    record_event({"type": "lifecycle_paused", "id": "recent1"})
+    record_event({"type": "identity_drift", "id": "recent2"})
+    # Window of 1h should include both (just-added).
+    got = recent_events(3600)
+    ids = [e.get("id") for e in got]
+    assert "recent1" in ids and "recent2" in ids
+
+
+def test_recent_events_empty_when_window_zero():
+    from bridge.ws_events import (
+        record_event,
+        recent_events,
+        _reset_event_ring_for_tests,
+    )
+
+    _reset_event_ring_for_tests()
+    record_event({"type": "x"})
+    # Window of 0s → nothing qualifies (record timestamp >= now - 0 is current now,
+    # and event was recorded before now, so it should be excluded by strict >=).
+    # Actually record_event uses time.time(), and cutoff = time.time() - 0 = now,
+    # so the previously-recorded event has ts < now by a few ns → excluded.
+    import time
+    time.sleep(0.001)
+    assert recent_events(0) == []
