@@ -7,3 +7,4 @@ dist/
 build/
 .claude/
 .DS_Store
+.worktrees/
