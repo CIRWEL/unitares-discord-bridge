@@ -62,6 +62,20 @@ class EventPoller:
         try:
             cursor = await self.cache.get_event_cursor()
             events = await self.gov.fetch_events(since=cursor)
+            # The REST /api/events endpoint supplements in-memory events from
+            # the audit DB, which uses UUID event_ids. The cursor protocol is
+            # int-only, so those events are incompatible — skip them at ingest
+            # to avoid re-posting the same batch every poll cycle. They remain
+            # visible on the governance dashboard.
+            skipped_non_int = sum(
+                1 for e in events if not isinstance(e.get("event_id"), int)
+            )
+            if skipped_non_int:
+                log.debug(
+                    "Skipped %d non-int-id event(s) from REST batch (audit supplement)",
+                    skipped_non_int,
+                )
+            events = [e for e in events if isinstance(e.get("event_id"), int)]
             for event in events:
                 embed = event_to_embed(event)
                 is_finding = event.get("type", "").endswith("_finding")
@@ -77,21 +91,9 @@ class EventPoller:
                 if is_critical_event(event):
                     await self._message_queue.put((self.alerts_channel, embed))
             if events:
-                # Only advance the cursor on int event_ids. A past governance
-                # schema drift emitted UUIDs here, and max() over mixed types
-                # would poison the cursor — better to replay a few events than
-                # crash every poll cycle.
-                int_ids = [
-                    e.get("event_id") for e in events
-                    if isinstance(e.get("event_id"), int)
-                ]
-                if int_ids:
-                    await self.cache.set_event_cursor(max(int_ids))
-                else:
-                    log.warning(
-                        "No int event_ids in batch of %d; cursor not advanced",
-                        len(events),
-                    )
+                await self.cache.set_event_cursor(
+                    max(e["event_id"] for e in events)
+                )
             if self.gov.consecutive_failures >= 3 and not self._gov_alert_sent:
                 self._gov_alert_sent = True
                 warn = discord.Embed(
