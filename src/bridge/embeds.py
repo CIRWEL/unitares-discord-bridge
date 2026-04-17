@@ -78,6 +78,25 @@ def event_to_embed(event: dict) -> discord.Embed:
     return embed
 
 
+# Synthesized REST events that are routine activity — operators don't need
+# to scan every onboard or idle ping. Everything else is a signal.
+_ACTIVITY_REST_TYPES = frozenset({
+    "agent_new",
+    "agent_idle",
+})
+
+
+def classify_rest_event(event: dict) -> str:
+    """Return ``"activity"`` for routine REST events, ``"signals"`` otherwise.
+
+    Findings route to #residents and never reach this helper.
+    """
+    t = event.get("type") or ""
+    if t in _ACTIVITY_REST_TYPES:
+        return "activity"
+    return "signals"
+
+
 def is_critical_event(event: dict) -> bool:
     """Should this event also be posted to #alerts?"""
     severity = event.get("severity")

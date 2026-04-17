@@ -98,14 +98,16 @@ async def on_ready():
     cache = BridgeCache(DB_PATH)
     await cache.__aenter__()
 
-    # Start the event poller if both channels exist
-    events_ch = channels.get("events")
+    # Start the event poller if all required channels exist
+    activity_ch = channels.get("activity")
+    signals_ch = channels.get("signals")
     alerts_ch = channels.get("alerts")
     residents_ch = channels.get("residents")
     audit_channel = channels.get("audit-log")
-    if events_ch and alerts_ch:
+    if activity_ch and signals_ch and alerts_ch:
         event_poller = EventPoller(
-            gov_client, cache, events_ch, alerts_ch, EVENT_POLL_INTERVAL,
+            gov_client, cache, activity_ch, signals_ch, alerts_ch,
+            EVENT_POLL_INTERVAL,
             audit_channel=audit_channel,
             residents_channel=residents_ch,
         )
@@ -134,7 +136,8 @@ async def on_ready():
         # taking the other down.
         ws_subscriber = WSEventSubscriber(
             GOVERNANCE_URL,
-            events_ch,
+            activity_ch,
+            signals_ch,
             alerts_ch,
             class_channels=class_channels,
             taxonomy_reverse=(taxonomy or {}).get("reverse") or {},
