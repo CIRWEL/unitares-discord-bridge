@@ -25,24 +25,19 @@ def _make_poller(
     cache.get_event_cursor = AsyncMock(return_value=0)
     cache.set_event_cursor = AsyncMock()
 
-    events_ch = MagicMock(spec=discord.TextChannel)
-    events_ch.name = "events"
+    activity_ch = MagicMock(spec=discord.TextChannel)
+    activity_ch.name = "activity"
+    signals_ch = MagicMock(spec=discord.TextChannel)
+    signals_ch.name = "signals"
     alerts_ch = MagicMock(spec=discord.TextChannel)
     alerts_ch.name = "alerts"
 
-    residents_ch = residents_channel
-    if residents_ch is None:
-        residents_ch_obj = None
-    else:
-        residents_ch_obj = residents_ch
-
     poller = EventPoller(
-        gov, cache, events_ch, alerts_ch,
-        residents_channel=residents_ch_obj,
+        gov, cache, activity_ch, signals_ch, alerts_ch,
+        residents_channel=residents_channel,
     )
 
     routed: list[tuple[str, discord.Embed]] = []
-    original_put = poller._message_queue.put
 
     async def capture_put(item):
         channel, embed = item
@@ -59,7 +54,7 @@ def _make_residents_channel() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_finding_routes_to_residents_not_events():
+async def test_finding_routes_to_residents_not_main_feed():
     residents_ch = _make_residents_channel()
     poller, routed = _make_poller(
         [{"event_id": 1, "type": "sentinel_finding", "severity": "high",
@@ -69,11 +64,12 @@ async def test_finding_routes_to_residents_not_events():
     await poller._poll_loop_once()
     channels_hit = [name for name, _ in routed]
     assert "residents" in channels_hit
-    assert "events" not in channels_hit
+    assert "activity" not in channels_hit
+    assert "signals" not in channels_hit
 
 
 @pytest.mark.asyncio
-async def test_lifecycle_event_routes_to_events_not_residents():
+async def test_verdict_change_routes_to_signals():
     residents_ch = _make_residents_channel()
     poller, routed = _make_poller(
         [{"event_id": 1, "type": "verdict_change", "severity": "warning",
@@ -83,8 +79,45 @@ async def test_lifecycle_event_routes_to_events_not_residents():
     )
     await poller._poll_loop_once()
     channels_hit = [name for name, _ in routed]
-    assert "events" in channels_hit
+    assert "signals" in channels_hit
+    assert "activity" not in channels_hit
     assert "residents" not in channels_hit
+
+
+@pytest.mark.asyncio
+async def test_agent_new_routes_to_activity():
+    poller, routed = _make_poller(
+        [{"event_id": 1, "type": "agent_new", "severity": "info",
+          "message": "m", "agent_id": "n", "agent_name": "N"}],
+    )
+    await poller._poll_loop_once()
+    channels_hit = [name for name, _ in routed]
+    assert "activity" in channels_hit
+    assert "signals" not in channels_hit
+
+
+@pytest.mark.asyncio
+async def test_agent_idle_routes_to_activity():
+    poller, routed = _make_poller(
+        [{"event_id": 1, "type": "agent_idle", "severity": "info",
+          "message": "m", "agent_id": "i", "agent_name": "I"}],
+    )
+    await poller._poll_loop_once()
+    channels_hit = [name for name, _ in routed]
+    assert "activity" in channels_hit
+    assert "signals" not in channels_hit
+
+
+@pytest.mark.asyncio
+async def test_drift_alert_routes_to_signals():
+    poller, routed = _make_poller(
+        [{"event_id": 1, "type": "drift_alert", "severity": "warning",
+          "message": "m", "agent_id": "d", "agent_name": "D"}],
+    )
+    await poller._poll_loop_once()
+    channels_hit = [name for name, _ in routed]
+    assert "signals" in channels_hit
+    assert "activity" not in channels_hit
 
 
 @pytest.mark.asyncio
@@ -99,11 +132,12 @@ async def test_critical_finding_routes_to_residents_and_alerts():
     channels_hit = [name for name, _ in routed]
     assert "residents" in channels_hit
     assert "alerts" in channels_hit
-    assert "events" not in channels_hit
+    assert "activity" not in channels_hit
+    assert "signals" not in channels_hit
 
 
 @pytest.mark.asyncio
-async def test_finding_falls_back_to_events_without_residents_channel():
+async def test_finding_falls_back_to_signals_without_residents_channel():
     poller, routed = _make_poller(
         [{"event_id": 1, "type": "sentinel_finding", "severity": "info",
           "message": "m", "agent_id": "s", "agent_name": "S"}],
@@ -111,5 +145,6 @@ async def test_finding_falls_back_to_events_without_residents_channel():
     )
     await poller._poll_loop_once()
     channels_hit = [name for name, _ in routed]
-    assert "events" in channels_hit
+    assert "signals" in channels_hit
+    assert "activity" not in channels_hit
     assert "residents" not in channels_hit

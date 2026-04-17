@@ -1,5 +1,5 @@
 import discord
-from bridge.embeds import event_to_embed, is_critical_event
+from bridge.embeds import classify_rest_event, event_to_embed, is_critical_event
 
 
 def test_verdict_change_embed():
@@ -86,8 +86,28 @@ def test_watcher_finding_embed():
 
 
 def test_finding_high_severity_routes_to_alerts():
-    # high severity = route to #alerts, not just #events
+    # high severity = route to #alerts, not just the main feed
     assert is_critical_event({"type": "sentinel_finding", "severity": "high"})
     assert is_critical_event({"type": "watcher_finding", "severity": "critical"})
     assert not is_critical_event({"type": "sentinel_finding", "severity": "info"})
     assert not is_critical_event({"type": "watcher_finding", "severity": "medium"})
+
+
+def test_classify_rest_event_activity_types():
+    assert classify_rest_event({"type": "agent_new"}) == "activity"
+    assert classify_rest_event({"type": "agent_idle"}) == "activity"
+
+
+def test_classify_rest_event_signal_types():
+    assert classify_rest_event({"type": "verdict_change"}) == "signals"
+    assert classify_rest_event({"type": "risk_threshold"}) == "signals"
+    assert classify_rest_event({"type": "drift_alert"}) == "signals"
+    assert classify_rest_event({"type": "drift_oscillation"}) == "signals"
+    assert classify_rest_event({"type": "trajectory_adjustment"}) == "signals"
+
+
+def test_classify_rest_event_unknown_defaults_to_signals():
+    # Unknown event types route to signals rather than activity so they
+    # remain visible to operators until explicitly reclassified.
+    assert classify_rest_event({"type": "new_future_event"}) == "signals"
+    assert classify_rest_event({}) == "signals"

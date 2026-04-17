@@ -170,6 +170,27 @@ def broadcaster_event_to_embed(event: dict) -> Optional[discord.Embed]:
     return embed
 
 
+_ACTIVITY_BROADCAST_TYPES = frozenset({
+    "lifecycle_created",
+    "lifecycle_resumed",
+    "lifecycle_archived",
+    "knowledge_write",
+})
+
+
+def classify_broadcaster_event(event: dict) -> str:
+    """Return ``"activity"`` for routine broadcaster events, ``"signals"`` otherwise.
+
+    Routine = creation/resume/archive lifecycle and knowledge writes. Signals =
+    anything operators would want to read promptly (pauses, drift, identity
+    assurance changes, circuit breaker trips, confidence clamps).
+    """
+    t = event.get("type") or ""
+    if t in _ACTIVITY_BROADCAST_TYPES:
+        return "activity"
+    return "signals"
+
+
 def is_critical_broadcaster_event(event: dict) -> bool:
     """Also mirror to alerts channel if this fires."""
     t = event.get("type") or ""
@@ -220,7 +241,8 @@ class WSEventSubscriber:
     def __init__(
         self,
         governance_url: str,
-        events_channel: discord.TextChannel,
+        activity_channel: discord.TextChannel,
+        signals_channel: discord.TextChannel,
         alerts_channel: discord.TextChannel,
         reconnect_initial: float = 1.0,
         reconnect_max: float = 30.0,
@@ -229,7 +251,8 @@ class WSEventSubscriber:
         taxonomy_reverse: Optional[dict] = None,
     ) -> None:
         self.ws_url = ws_url_from_http(governance_url)
-        self.events_channel = events_channel
+        self.activity_channel = activity_channel
+        self.signals_channel = signals_channel
         self.alerts_channel = alerts_channel
         # Per-class channels: {"INT": channel, "ENT": channel, ...}. When a
         # matched event has a class in this map, it's ALSO posted to that
@@ -307,8 +330,10 @@ class WSEventSubscriber:
         embed = broadcaster_event_to_embed(event)
         if embed is None:
             return
+        bucket = classify_broadcaster_event(event)
+        target = self.activity_channel if bucket == "activity" else self.signals_channel
         try:
-            self._send_queue.put_nowait((self.events_channel, embed))
+            self._send_queue.put_nowait((target, embed))
         except asyncio.QueueFull:
             # Drop rather than block the websocket reader. The dashboard
             # is the authoritative event record anyway; Discord is a

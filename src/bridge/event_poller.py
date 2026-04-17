@@ -8,7 +8,7 @@ import logging
 import discord
 
 from bridge.cache import BridgeCache
-from bridge.embeds import event_to_embed, is_critical_event
+from bridge.embeds import classify_rest_event, event_to_embed, is_critical_event
 from bridge.mcp_client import GovernanceClient
 from bridge.tasks import cancel_tasks, create_logged_task
 
@@ -22,7 +22,8 @@ class EventPoller:
         self,
         gov_client: GovernanceClient,
         cache: BridgeCache,
-        events_channel: discord.TextChannel,
+        activity_channel: discord.TextChannel,
+        signals_channel: discord.TextChannel,
         alerts_channel: discord.TextChannel,
         interval: int = 10,
         audit_channel: discord.TextChannel | None = None,
@@ -30,7 +31,8 @@ class EventPoller:
     ) -> None:
         self.gov = gov_client
         self.cache = cache
-        self.events_channel = events_channel
+        self.activity_channel = activity_channel
+        self.signals_channel = signals_channel
         self.alerts_channel = alerts_channel
         self.interval = interval
         self.audit_channel = audit_channel
@@ -66,7 +68,12 @@ class EventPoller:
                 if is_finding and self.residents_channel is not None:
                     await self._message_queue.put((self.residents_channel, embed))
                 else:
-                    await self._message_queue.put((self.events_channel, embed))
+                    bucket = classify_rest_event(event)
+                    target = (
+                        self.activity_channel if bucket == "activity"
+                        else self.signals_channel
+                    )
+                    await self._message_queue.put((target, embed))
                 if is_critical_event(event):
                     await self._message_queue.put((self.alerts_channel, embed))
             if events:

@@ -10,6 +10,7 @@ import discord
 
 from bridge.ws_events import (
     broadcaster_event_to_embed,
+    classify_broadcaster_event,
     is_critical_broadcaster_event,
     resolve_violation_class,
     ws_url_from_http,
@@ -340,3 +341,35 @@ def test_empty_reverse_still_checks_explicit():
         {},
     )
     assert cls == "REC"
+
+
+# ---------------------------------------------------------------------------
+# classify_broadcaster_event — routes broadcaster events to #activity vs #signals
+# ---------------------------------------------------------------------------
+
+
+def test_classify_broadcaster_activity_types():
+    # Routine lifecycle and knowledge writes are high-volume but low-signal.
+    assert classify_broadcaster_event({"type": "lifecycle_created"}) == "activity"
+    assert classify_broadcaster_event({"type": "lifecycle_resumed"}) == "activity"
+    assert classify_broadcaster_event({"type": "lifecycle_archived"}) == "activity"
+    assert classify_broadcaster_event({"type": "knowledge_write"}) == "activity"
+
+
+def test_classify_broadcaster_signal_types():
+    # Anything operators would want to read promptly.
+    assert classify_broadcaster_event({"type": "lifecycle_paused"}) == "signals"
+    assert classify_broadcaster_event({"type": "lifecycle_stuck_detected"}) == "signals"
+    assert classify_broadcaster_event({"type": "lifecycle_silent_critical"}) == "signals"
+    assert classify_broadcaster_event({"type": "lifecycle_loop_detected"}) == "signals"
+    assert classify_broadcaster_event({"type": "identity_drift"}) == "signals"
+    assert classify_broadcaster_event({"type": "identity_assurance_change"}) == "signals"
+    assert classify_broadcaster_event({"type": "knowledge_confidence_clamped"}) == "signals"
+    assert classify_broadcaster_event({"type": "circuit_breaker_trip"}) == "signals"
+    assert classify_broadcaster_event({"type": "circuit_breaker_reset"}) == "signals"
+
+
+def test_classify_broadcaster_unknown_defaults_to_signals():
+    # Unknown types stay visible rather than silently slotting into activity.
+    assert classify_broadcaster_event({"type": "new_future_event_class"}) == "signals"
+    assert classify_broadcaster_event({}) == "signals"

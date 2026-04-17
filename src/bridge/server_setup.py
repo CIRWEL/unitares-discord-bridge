@@ -12,8 +12,9 @@ log = logging.getLogger(__name__)
 
 CHANNEL_STRUCTURE: dict[str, dict[str, dict[str, str]]] = {
     "GOVERNANCE": {
-        "events": {"type": "text", "topic": "Governance lifecycle — verdicts, risk, drift"},
-        "alerts": {"type": "text", "topic": "Critical only — pause, reject, risk > 70%"},
+        "activity": {"type": "text", "topic": "Routine agent activity — onboards, idle, lifecycle_created/resumed/archived, knowledge writes"},
+        "signals": {"type": "text", "topic": "Operator attention — verdict changes, drift, risk, identity assurance, circuit breakers, confidence clamps"},
+        "alerts": {"type": "text", "topic": "Critical only — pause, reject, stuck, silent critical, circuit breaker trip"},
         "residents": {"type": "text", "topic": "Sentinel / Vigil / Watcher findings"},
         "governance-hud": {"type": "text", "topic": "Auto-updating system status"},
     },
