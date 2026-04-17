@@ -77,8 +77,21 @@ class EventPoller:
                 if is_critical_event(event):
                     await self._message_queue.put((self.alerts_channel, embed))
             if events:
-                last_id = max(e.get("event_id", 0) for e in events)
-                await self.cache.set_event_cursor(last_id)
+                # Only advance the cursor on int event_ids. A past governance
+                # schema drift emitted UUIDs here, and max() over mixed types
+                # would poison the cursor — better to replay a few events than
+                # crash every poll cycle.
+                int_ids = [
+                    e.get("event_id") for e in events
+                    if isinstance(e.get("event_id"), int)
+                ]
+                if int_ids:
+                    await self.cache.set_event_cursor(max(int_ids))
+                else:
+                    log.warning(
+                        "No int event_ids in batch of %d; cursor not advanced",
+                        len(events),
+                    )
             if self.gov.consecutive_failures >= 3 and not self._gov_alert_sent:
                 self._gov_alert_sent = True
                 warn = discord.Embed(

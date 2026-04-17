@@ -148,3 +148,40 @@ async def test_finding_falls_back_to_signals_without_residents_channel():
     assert "signals" in channels_hit
     assert "activity" not in channels_hit
     assert "residents" not in channels_hit
+
+
+@pytest.mark.asyncio
+async def test_int_event_id_advances_cursor():
+    poller, _ = _make_poller(
+        [{"event_id": 5, "type": "agent_new", "severity": "info",
+          "message": "m", "agent_id": "a", "agent_name": "A"},
+         {"event_id": 7, "type": "agent_idle", "severity": "info",
+          "message": "m", "agent_id": "b", "agent_name": "B"}],
+    )
+    await poller._poll_loop_once()
+    poller.cache.set_event_cursor.assert_awaited_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_non_int_event_id_does_not_advance_cursor():
+    # A prior governance schema drift emitted UUID event_ids. Rather than
+    # poison the cursor we must skip the set_event_cursor call entirely.
+    poller, _ = _make_poller(
+        [{"event_id": "fcd718be-0243-4a26-b503-79d4a3d7bfb1",
+          "type": "agent_new", "severity": "info",
+          "message": "m", "agent_id": "a", "agent_name": "A"}],
+    )
+    await poller._poll_loop_once()
+    poller.cache.set_event_cursor.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_mixed_event_ids_advance_to_max_int_only():
+    poller, _ = _make_poller(
+        [{"event_id": "uuid-thing", "type": "agent_new", "severity": "info",
+          "message": "m", "agent_id": "a", "agent_name": "A"},
+         {"event_id": 3, "type": "agent_idle", "severity": "info",
+          "message": "m", "agent_id": "b", "agent_name": "B"}],
+    )
+    await poller._poll_loop_once()
+    poller.cache.set_event_cursor.assert_awaited_once_with(3)

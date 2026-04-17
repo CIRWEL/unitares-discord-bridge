@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import aiosqlite
+
+log = logging.getLogger(__name__)
 
 
 class BridgeCache:
@@ -38,13 +41,25 @@ class BridgeCache:
     # -- event cursor --------------------------------------------------------
 
     async def get_event_cursor(self) -> int:
-        """Return the last-seen event cursor, defaulting to 0."""
+        """Return the last-seen event cursor, defaulting to 0.
+
+        A prior bug wrote non-integer event_ids (e.g. UUIDs from a transient
+        governance schema) into the cursor. Defensively parse: on any failure
+        we log and return 0, which re-replays recent events once — preferable
+        to every poll raising.
+        """
         assert self._db is not None
         async with self._db.execute(
             "SELECT value FROM kv WHERE key = 'event_cursor'"
         ) as cur:
             row = await cur.fetchone()
-        return int(row[0]) if row else 0
+        if not row:
+            return 0
+        try:
+            return int(row[0])
+        except (ValueError, TypeError):
+            log.warning("Corrupt event_cursor %r; resetting to 0", row[0])
+            return 0
 
     async def set_event_cursor(self, cursor: int) -> None:
         """Upsert the event cursor."""
