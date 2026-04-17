@@ -176,8 +176,17 @@ def _derive_verdict(data: dict) -> str:
 
 
 async def fetch_agents(gov_client: "GovernanceClient") -> list[dict]:
-    """Call list_agents and return normalised list of {"id": ..., "label": ...}."""
-    result = await gov_client.call_tool("list_agents", {})
+    """Call list_agents and return normalised list of {"id": ..., "label": ...}.
+
+    Sorted by last activity descending (most-recent first). Test agents are
+    filtered out by governance's lite mode; we widen the window and re-sort
+    locally so the HUD surfaces recent agents instead of "best of the best"
+    high-update ones.
+    """
+    result = await gov_client.call_tool(
+        "list_agents",
+        {"lite": True, "limit": 50, "recent_days": 7},
+    )
     if result is None:
         return []
     try:
@@ -188,6 +197,11 @@ async def fetch_agents(gov_client: "GovernanceClient") -> list[dict]:
             items = data
         else:
             items = []
+        items = sorted(
+            items,
+            key=lambda it: it.get("last_update") or it.get("last") or "",
+            reverse=True,
+        )
         agents = []
         for item in items:
             agent_id = item.get("agent_id") or item.get("id", "")

@@ -195,8 +195,8 @@ async def test_fetch_agents():
     })
     agents = await _fetch_agents(gov)
     assert len(agents) == 2
-    assert agents[0] == {"id": "a1", "label": "opus"}
-    assert agents[1] == {"id": "a2", "label": "sonnet"}
+    assert {"id": "a1", "label": "opus"} in agents
+    assert {"id": "a2", "label": "sonnet"} in agents
 
 
 @pytest.mark.asyncio
@@ -205,6 +205,33 @@ async def test_fetch_agents_returns_empty_on_none():
     gov.call_tool = AsyncMock(return_value=None)
     agents = await _fetch_agents(gov)
     assert agents == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_agents_sorts_by_recency_desc():
+    gov = AsyncMock()
+    gov.call_tool = AsyncMock(return_value={
+        "result": {"content": [{"text": json.dumps([
+            {"agent_id": "stale", "label": "old", "last_update": "2026-04-10T00:00:00Z"},
+            {"agent_id": "fresh", "label": "new", "last_update": "2026-04-17T00:00:00Z"},
+            {"agent_id": "mid", "label": "mid", "last_update": "2026-04-14T00:00:00Z"},
+        ])}]},
+    })
+    agents = await _fetch_agents(gov)
+    assert [a["id"] for a in agents] == ["fresh", "mid", "stale"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_agents_requests_recent_window():
+    gov = AsyncMock()
+    gov.call_tool = AsyncMock(return_value={
+        "result": {"content": [{"text": json.dumps([])}]},
+    })
+    await _fetch_agents(gov)
+    name, args = gov.call_tool.call_args.args
+    assert name == "list_agents"
+    assert args.get("recent_days") == 7
+    assert args.get("lite") is True
 
 
 @pytest.mark.asyncio
