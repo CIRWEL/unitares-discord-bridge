@@ -1,5 +1,9 @@
 # UNITARES Discord Bridge
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+[![discord.py 2.4+](https://img.shields.io/badge/discord.py-2.4%2B-5865F2.svg)](https://github.com/Rapptz/discord.py)
+
 Discord bot that surfaces UNITARES governance events and Lumen state in Discord.
 
 ## What It Does
