@@ -9,6 +9,7 @@ regress to "invisible in Discord".
 import discord
 
 from bridge.ws_events import (
+    _SEND_QUEUE_MAX,
     broadcaster_event_to_embed,
     classify_broadcaster_event,
     is_critical_broadcaster_event,
@@ -373,3 +374,11 @@ def test_classify_broadcaster_unknown_defaults_to_signals():
     # Unknown types stay visible rather than silently slotting into activity.
     assert classify_broadcaster_event({"type": "new_future_event_class"}) == "signals"
     assert classify_broadcaster_event({}) == "signals"
+
+
+def test_send_queue_capacity_absorbs_sentinel_burst():
+    # A fleet-wide Sentinel scan can fan out to 3 queue entries per critical
+    # event (signals + alerts mirror + class-routed channel). The previous
+    # maxsize=100 silently dropped ~170 lifecycle_silent_critical events over
+    # 4 days. Keep headroom for ~300 agents firing at once.
+    assert _SEND_QUEUE_MAX >= 1000

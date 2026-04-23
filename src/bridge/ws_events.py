@@ -48,6 +48,14 @@ log = logging.getLogger(__name__)
 _EVENT_RING_MAX = 1000
 _event_ring: "deque[tuple[float, dict]]" = deque(maxlen=_EVENT_RING_MAX)
 
+# Send-queue capacity for the Discord poster. A single critical event fans out
+# to up to 3 queue entries (signals + alerts mirror + class-routed channel),
+# and Sentinel's fleet scan emits typed events in bursts every 10 minutes. With
+# the old maxsize=100 and 150ms pacing, every scan burst saturated the queue
+# and silently dropped alerts (~170 lifecycle_silent_critical drops over 4
+# days). 1000 absorbs a worst-case fleet-wide burst without dropping.
+_SEND_QUEUE_MAX = 1000
+
 
 def record_event(event: dict) -> None:
     """Append an event to the ring buffer with a wall-clock receive timestamp."""
@@ -270,7 +278,7 @@ class WSEventSubscriber:
         self._send_task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
         self._send_queue: asyncio.Queue[tuple[discord.TextChannel, discord.Embed]] = (
-            asyncio.Queue(maxsize=100)
+            asyncio.Queue(maxsize=_SEND_QUEUE_MAX)
         )
 
     async def start(self) -> None:
