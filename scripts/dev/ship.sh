@@ -41,8 +41,32 @@ classify() {
     echo "other"
 }
 
+# Split a multi-line commit message into PR title (first line) and body
+# (remainder, leading blank separator line stripped per git convention).
+# Two functions rather than one-with-nameref so we stay compatible with
+# bash 3.2 shipped on macOS (which lacks `local -n`).
+split_title() {
+    printf '%s' "${1%%$'\n'*}"
+}
+split_body() {
+    local msg="$1"
+    local title="${msg%%$'\n'*}"
+    if [[ "$msg" == "$title" ]]; then
+        return 0
+    fi
+    local rest="${msg#*$'\n'}"
+    printf '%s' "${rest#$'\n'}"
+}
+
 if [[ "${1:-}" == "--classify" ]]; then
     classify
+    exit 0
+fi
+
+if [[ "${1:-}" == "--split-preview" ]]; then
+    # Testing hook — prints title on one line, then a fixed marker, then
+    # the raw body. Used by tests/test_ship_split.sh.
+    printf '%s\n===BODY===\n%s' "$(split_title "${2:-}")" "$(split_body "${2:-}")"
     exit 0
 fi
 
@@ -60,13 +84,26 @@ case "$KIND" in
         echo "nothing staged — stage files with 'git add' first" >&2
         exit 2 ;;
     runtime)
-        SLUG=$(printf '%s' "$MESSAGE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | cut -c1-40)
+        # Split commit message: first line → PR title, rest → PR body.
+        # Previously the whole multi-line MESSAGE was passed as --title,
+        # producing a PR with a 20-line title and an empty body.
+        TITLE="$(split_title "$MESSAGE")"
+        BODY_REST="$(split_body "$MESSAGE")"
+        if [[ -z "$BODY_REST" ]]; then
+            BODY="Auto-shipped by ship.sh — runtime path. CI gate applies."
+        else
+            BODY="${BODY_REST}
+
+---
+Auto-shipped by ship.sh — runtime path. CI gate applies."
+        fi
+        SLUG=$(printf '%s' "$TITLE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | cut -c1-40)
         NEW_BRANCH="codex/auto/$(date +%Y%m%d-%H%M%S)-${SLUG}"
         echo "[ship] runtime path → $NEW_BRANCH (PR + auto-merge)"
         git checkout -b "$NEW_BRANCH"
         git commit -m "$MESSAGE"
         git push -u origin "$NEW_BRANCH"
-        PR_URL=$(gh pr create --title "$MESSAGE" --body "Auto-shipped by ship.sh — runtime path. Auto-merge is enabled; CI gate applies.")
+        PR_URL=$(gh pr create --title "$TITLE" --body "$BODY")
         echo "$PR_URL"
         gh pr merge --auto --squash "$PR_URL" || \
             echo "[ship] auto-merge not enabled (branch protection may require manual setup); PR is open"
