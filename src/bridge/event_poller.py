@@ -76,6 +76,27 @@ class EventPoller:
                     skipped_non_int,
                 )
             events = [e for e in events if isinstance(e.get("event_id"), int)]
+            # Governance's in-memory event counter resets to 1 on restart, but
+            # our cursor persists in SQLite — so a cursor captured before a
+            # restart silently filters every subsequent poll to empty until
+            # the counter catches back up. Detect the gap by probing from 0
+            # when the filtered result is empty: if the server's max int
+            # event_id is now less than our cursor, reset to 0.
+            if not events and cursor > 0:
+                probe = await self.gov.fetch_events(since=0, limit=50)
+                probe_ints = [
+                    e["event_id"] for e in probe
+                    if isinstance(e.get("event_id"), int)
+                ]
+                server_max = max(probe_ints, default=0)
+                if server_max < cursor:
+                    log.warning(
+                        "Stale event cursor (%d > server max %d); "
+                        "resetting — governance likely restarted",
+                        cursor, server_max,
+                    )
+                    await self.cache.set_event_cursor(0)
+                    return
             for event in events:
                 embed = event_to_embed(event)
                 is_finding = event.get("type", "").endswith("_finding")

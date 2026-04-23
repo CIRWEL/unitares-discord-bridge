@@ -15,14 +15,24 @@ def _make_poller(
     events: list[dict],
     *,
     residents_channel: discord.TextChannel | None = None,
+    cursor: int = 0,
+    probe_events: list[dict] | None = None,
 ) -> tuple[EventPoller, list[tuple[str, discord.Embed]]]:
-    """Build an EventPoller wired to fake gov client + capture queue."""
+    """Build an EventPoller wired to fake gov client + capture queue.
+
+    If ``probe_events`` is provided, ``fetch_events`` returns ``events`` on
+    the first call (the real poll) and ``probe_events`` on subsequent calls
+    (the restart-detection probe from ``since=0``).
+    """
     gov = MagicMock()
-    gov.fetch_events = AsyncMock(return_value=events)
+    if probe_events is None:
+        gov.fetch_events = AsyncMock(return_value=events)
+    else:
+        gov.fetch_events = AsyncMock(side_effect=[events, probe_events])
     gov.consecutive_failures = 0
 
     cache = MagicMock()
-    cache.get_event_cursor = AsyncMock(return_value=0)
+    cache.get_event_cursor = AsyncMock(return_value=cursor)
     cache.set_event_cursor = AsyncMock()
 
     activity_ch = MagicMock(spec=discord.TextChannel)
@@ -175,6 +185,54 @@ async def test_non_int_event_id_is_skipped_entirely():
     )
     await poller._poll_loop_once()
     assert routed == []
+    poller.cache.set_event_cursor.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_cursor_resets_when_server_counter_regressed():
+    # Simulates governance MCP restart: our cached cursor is 45 but the
+    # server's in-memory int counter is back at 1, so every `since=45` poll
+    # filters to empty. The poller probes with since=0 and, on finding a
+    # lower server max, resets the cursor to 0.
+    poller, _ = _make_poller(
+        events=[],
+        cursor=45,
+        probe_events=[
+            {"event_id": 1, "type": "agent_new", "severity": "info",
+             "message": "m", "agent_id": "a", "agent_name": "A"},
+            {"event_id": "uuid-thing", "type": "cross_device_call",
+             "severity": "info", "message": "m",
+             "agent_id": "b", "agent_name": "B"},
+        ],
+    )
+    await poller._poll_loop_once()
+    poller.cache.set_event_cursor.assert_awaited_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_stale_cursor_check_skipped_when_cursor_is_zero():
+    # No cursor yet → nothing to detect as stale. Probe must not run.
+    poller, _ = _make_poller(events=[], cursor=0)
+    await poller._poll_loop_once()
+    # Exactly one fetch (the normal poll); no probe.
+    assert poller.gov.fetch_events.await_count == 1
+    poller.cache.set_event_cursor.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cursor_not_reset_when_server_still_ahead():
+    # Empty filtered result but server max >= cursor → healthy, no reset.
+    # Happens when all recent in-memory events have rolled off and only
+    # UUID audit-DB events remain above the cursor.
+    poller, _ = _make_poller(
+        events=[],
+        cursor=45,
+        probe_events=[
+            {"event_id": 50, "type": "agent_new", "severity": "info",
+             "message": "m", "agent_id": "a", "agent_name": "A"},
+        ],
+    )
+    await poller._poll_loop_once()
     poller.cache.set_event_cursor.assert_not_awaited()
 
 
