@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    groups:
+      runtime-deps:
+        patterns:
+          - "discord.py"
+          - "httpx"
+          - "aiosqlite"
+          - "websockets"
+          - "python-dotenv"
+        update-types:
+          - "minor"
+          - "patch"
+      dev-deps:
+        patterns:
+          - "pytest*"
+        update-types:
+          - "minor"
+          - "patch"
+    labels:
+      - "dependencies"
