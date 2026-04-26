@@ -307,3 +307,97 @@ async def test_no_token_no_auth_header():
             timeout=10,
             headers={},
         )
+
+
+# --- fetch_agents: missing/redacted id handling ---
+#
+# Background: governance's list_agents may omit the `id` field for non-operator
+# callers (KG 2026-04-20T00:57:45 redaction work). Before this fix, the
+# `or item.get("id", "")` fallback would emit an empty-string id, which then
+# went into get_governance_metrics(agent_id="") downstream — silently
+# returning empty metrics for every redacted row and showing a HUD with
+# labels but no EISV state.
+
+@pytest.mark.asyncio
+async def test_fetch_agents_skips_rows_without_id():
+    """Rows with no agent_id and no id are dropped entirely, not emitted as id=''."""
+    from bridge.mcp_client import fetch_agents
+
+    gov = AsyncMock()
+    gov.call_tool.return_value = {
+        "result": {
+            "agents": [
+                {"agent_id": "uuid-aaa", "label": "alpha"},
+                {"label": "beta-redacted"},  # missing id — must be dropped
+                {"id": "uuid-ccc", "label": "gamma"},
+                {"agent_id": "", "label": "empty-string-id"},  # also dropped
+                {"agent_id": None, "label": "none-id"},  # also dropped
+            ],
+        },
+    }
+
+    agents = await fetch_agents(gov)
+
+    ids = [a["id"] for a in agents]
+    assert "" not in ids, "empty-string id must never reach downstream callers"
+    assert None not in ids
+    assert ids == ["uuid-aaa", "uuid-ccc"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_agents_keeps_rows_with_either_key():
+    """`agent_id` (full mode) and `id` (lite mode) are both honored."""
+    from bridge.mcp_client import fetch_agents
+
+    gov = AsyncMock()
+    gov.call_tool.return_value = {
+        "result": {
+            "agents": [
+                {"id": "lite-uuid", "label": "lite"},
+                {"agent_id": "full-uuid", "label": "full"},
+            ],
+        },
+    }
+
+    agents = await fetch_agents(gov)
+    assert {a["id"] for a in agents} == {"lite-uuid", "full-uuid"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_agents_returns_empty_when_all_redacted():
+    """If every row is redacted, we return [] rather than emitting empty IDs."""
+    from bridge.mcp_client import fetch_agents
+
+    gov = AsyncMock()
+    gov.call_tool.return_value = {
+        "result": {
+            "agents": [
+                {"label": "a"},
+                {"label": "b"},
+                {"label": "c"},
+            ],
+        },
+    }
+
+    agents = await fetch_agents(gov)
+    assert agents == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_metrics_does_not_query_for_empty_id():
+    """Defensive: if a caller hands fetch_metrics an empty id, we skip
+    rather than firing get_governance_metrics(agent_id='').
+    """
+    from bridge.mcp_client import fetch_metrics
+
+    gov = AsyncMock()
+    gov.call_tool.return_value = {"result": {"E": 0.5, "I": 0.5, "S": 0.5, "V": 0.0}}
+
+    metrics = await fetch_metrics(gov, [{"id": ""}, {"id": None}, {"id": "uuid-a"}])
+
+    # Only one real call made — for "uuid-a".
+    assert gov.call_tool.await_count == 1
+    args, kwargs = gov.call_tool.await_args
+    assert args[1]["agent_id"] == "uuid-a"
+    assert "uuid-a" in metrics
+    assert "" not in metrics
