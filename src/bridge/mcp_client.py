@@ -204,7 +204,14 @@ async def fetch_agents(gov_client: "GovernanceClient") -> list[dict]:
         )
         agents = []
         for item in items:
-            agent_id = item.get("agent_id") or item.get("id", "")
+            # Governance redacts UUIDs for non-operator callers
+            # (KG 2026-04-20T00:57:45). Skip rows without a usable id —
+            # passing "" downstream silently fires
+            # get_governance_metrics(agent_id="") and produces a HUD with
+            # labels but no EISV state.
+            agent_id = item.get("agent_id") or item.get("id")
+            if not agent_id:
+                continue
             label = item.get("label") or item.get("name") or agent_id
             agents.append({"id": agent_id, "label": label})
         return agents
@@ -219,7 +226,12 @@ async def fetch_metrics(
     """Fetch EISV metrics for each agent. Returns {agent_id: {E, I, S, V, verdict}}."""
     metrics: dict[str, dict] = {}
     for agent in agents:
-        agent_id = agent["id"]
+        agent_id = agent.get("id")
+        if not agent_id:
+            # Defense in depth: even if fetch_agents emitted an empty id
+            # (shouldn't happen post-fix), don't fire metric requests for
+            # "" — they return empty dicts and pollute the HUD.
+            continue
         result = await gov_client.call_tool(
             "get_governance_metrics", {"agent_id": agent_id},
         )
