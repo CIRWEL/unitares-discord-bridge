@@ -104,14 +104,61 @@ async def test_sensor_loop_falls_back_on_not_found():
 
 @pytest.mark.asyncio
 async def test_sensor_loop_offline_clears_pinned_msg():
-    """Going offline posts a new message and clears _sensor_msg."""
+    """After threshold consecutive failures, offline posts a new message and clears _sensor_msg."""
     poller, anima, sensor_ch = _make_poller()
     anima.fetch_state = AsyncMock(return_value=None)
 
     existing_msg = AsyncMock(spec=discord.Message)
     poller._sensor_msg = existing_msg
 
+    # Default threshold is 2: first None must not flip state.
+    await poller._sensor_tick()
+    assert poller._was_offline is False
+    sensor_ch.send.assert_not_called()
+
+    # Second consecutive None crosses the threshold.
     await poller._sensor_tick()
     assert poller._was_offline is True
     assert poller._sensor_msg is None
     sensor_ch.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_sensor_loop_single_transient_failure_does_not_announce_offline():
+    """One transient None tick is debounced — no Offline embed, no _was_offline flip."""
+    poller, anima, sensor_ch = _make_poller()
+    # First call fails, then recovers.
+    anima.fetch_state = AsyncMock(side_effect=[None, SAMPLE_STATE])
+
+    sent_msg = AsyncMock(spec=discord.Message)
+    sensor_ch.send = AsyncMock(return_value=sent_msg)
+
+    await poller._sensor_tick()
+    assert poller._was_offline is False
+    # No Offline announcement.
+    sensor_ch.send.assert_not_called()
+
+    # Recovery tick: posts the regular sensor embed (first time), not "Lumen Online".
+    await poller._sensor_tick()
+    assert poller._was_offline is False
+    sensor_ch.send.assert_called_once()
+    sent_embed = sensor_ch.send.call_args.kwargs.get("embed")
+    assert sent_embed is not None
+    assert "Online" not in (sent_embed.title or "")
+    assert "Offline" not in (sent_embed.title or "")
+
+
+@pytest.mark.asyncio
+async def test_sensor_loop_failure_counter_resets_on_success():
+    """A success tick between failures resets the counter — threshold must be consecutive."""
+    poller, anima, sensor_ch = _make_poller()
+    anima.fetch_state = AsyncMock(side_effect=[None, SAMPLE_STATE, None])
+
+    sent_msg = AsyncMock(spec=discord.Message)
+    sensor_ch.send = AsyncMock(return_value=sent_msg)
+
+    await poller._sensor_tick()  # fail (count=1)
+    await poller._sensor_tick()  # success (count reset)
+    await poller._sensor_tick()  # fail (count=1, not 2)
+
+    assert poller._was_offline is False

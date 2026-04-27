@@ -72,13 +72,20 @@ class LumenPoller:
         art_channel: discord.TextChannel,
         sensor_channel: discord.TextChannel,
         sensor_interval: int = 300,
+        offline_threshold: int = 2,
     ) -> None:
         self.anima = anima_client
         self.art_channel = art_channel
         self.sensor_channel = sensor_channel
         self.sensor_interval = sensor_interval
+        # Require N consecutive failed ticks before announcing offline. A single
+        # transient transport blip (cloudflared / IPv6-loopback-proxy stutter)
+        # used to flip _was_offline and produce a false "Lumen Offline → Lumen
+        # Online" cycle in Discord. Threshold ≥ 2 debounces those spurious flips.
+        self.offline_threshold = max(1, offline_threshold)
         self._last_drawing: str | None = None
         self._was_offline: bool = False
+        self._consecutive_failures: int = 0
         self._sensor_msg: discord.Message | None = None
         self._sensor_task: asyncio.Task | None = None
         self._drawing_task: asyncio.Task | None = None
@@ -110,9 +117,13 @@ class LumenPoller:
         try:
             state = await self.anima.fetch_state()
             if state is None:
-                # Lumen offline — post a new message (not edit) so the
-                # transition is visible in channel history.
-                if not self._was_offline:
+                self._consecutive_failures += 1
+                # Debounce: only declare offline once N consecutive ticks have
+                # failed. Single transient blips don't count as outages.
+                if (
+                    not self._was_offline
+                    and self._consecutive_failures >= self.offline_threshold
+                ):
                     embed = discord.Embed(
                         title="Lumen Offline",
                         colour=discord.Colour.dark_red(),
@@ -123,6 +134,7 @@ class LumenPoller:
                     self._was_offline = True
                     self._sensor_msg = None
             else:
+                self._consecutive_failures = 0
                 if self._was_offline:
                     recovery = discord.Embed(
                         title="Lumen Online",
