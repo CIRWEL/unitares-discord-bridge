@@ -7,7 +7,7 @@ DISCORD_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 GUILD_ID = int(os.environ.get("DISCORD_GUILD_ID", "0"))
 
 GOVERNANCE_URL = os.environ.get("GOVERNANCE_MCP_URL", "http://localhost:8767")
-ANIMA_URL = os.environ.get("ANIMA_MCP_URL", "http://100.79.215.83:8766")
+ANIMA_URL = os.environ.get("ANIMA_MCP_URL", "")
 
 GOVERNANCE_TOKEN = os.environ.get("GOVERNANCE_API_TOKEN", "")
 ANIMA_TOKEN = os.environ.get("ANIMA_API_TOKEN", "")

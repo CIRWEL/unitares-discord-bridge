@@ -150,7 +150,7 @@ async def test_anima_fetch_state():
     resp = make_mock_response(json_data=state)
 
     with mock_httpx_client("get", resp):
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
         result = await client.fetch_state()
 
     assert result == state
@@ -160,7 +160,7 @@ async def test_anima_fetch_state():
 @pytest.mark.asyncio
 async def test_anima_fetch_state_offline():
     with mock_httpx_client_error("get", Exception("Connection refused")):
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
         result = await client.fetch_state()
 
     assert result is None
@@ -174,7 +174,7 @@ async def test_anima_fetch_gallery():
     resp = make_mock_response(json_data=gallery_response)
 
     with mock_httpx_client("get", resp):
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
         result = await client.fetch_gallery(limit=5)
 
     assert result == drawings
@@ -183,7 +183,7 @@ async def test_anima_fetch_gallery():
 @pytest.mark.asyncio
 async def test_anima_fetch_gallery_error():
     with mock_httpx_client_error("get", Exception("timeout")):
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
         result = await client.fetch_gallery()
 
     assert result is None
@@ -195,7 +195,7 @@ async def test_anima_fetch_drawing_image():
     resp = make_mock_response(content=image_bytes)
 
     with mock_httpx_client("get", resp):
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
         result = await client.fetch_drawing_image("art_001.png")
 
     assert result == image_bytes
@@ -204,7 +204,7 @@ async def test_anima_fetch_drawing_image():
 @pytest.mark.asyncio
 async def test_anima_fetch_drawing_image_error():
     with mock_httpx_client_error("get", Exception("404")):
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
         result = await client.fetch_drawing_image("nonexistent.png")
 
     assert result is None
@@ -234,7 +234,7 @@ async def test_anima_open_close():
     with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
         mock_instance = AsyncMock()
         mock_cls.return_value = mock_instance
-        client = AnimaClient("http://100.79.215.83:8766")
+        client = AnimaClient("http://localhost:8766")
 
         await client.open()
         assert client._client is mock_instance
@@ -281,11 +281,11 @@ async def test_anima_token_passed_as_header():
     with patch("bridge.mcp_client.httpx.AsyncClient") as mock_cls:
         mock_instance = AsyncMock()
         mock_cls.return_value = mock_instance
-        client = AnimaClient("http://100.79.215.83:8766", token="anima-secret")
+        client = AnimaClient("http://localhost:8766", token="anima-secret")
 
         await client.open()
         mock_cls.assert_called_once_with(
-            base_url="http://100.79.215.83:8766",
+            base_url="http://localhost:8766",
             timeout=10,
             headers={"Authorization": "Bearer anima-secret"},
         )
