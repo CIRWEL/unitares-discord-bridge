@@ -1,6 +1,6 @@
 # UNITARES Discord Bridge
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![discord.py 2.4+](https://img.shields.io/badge/discord.py-2.4%2B-5865F2.svg)](https://github.com/Rapptz/discord.py)
 
@@ -50,4 +50,4 @@ python -m bridge.bot
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
