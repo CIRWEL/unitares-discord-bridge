@@ -130,9 +130,13 @@ def test_identity_assurance_change_blue():
     embed = broadcaster_event_to_embed({
         "type": "identity_assurance_change",
         "agent_label": "sentinel",
+        "old_tier": 2,
+        "new_tier": 3,
+        "tier_name": "verified",
     })
     # No explicit warning colour for routine assurance changes.
     assert embed.colour == discord.Colour.blue()
+    assert embed.description == "Tier 2 -> 3 (verified)"
 
 
 # ---------------------------------------------------------------------------
@@ -350,10 +354,12 @@ def test_empty_reverse_still_checks_explicit():
 
 
 def test_classify_broadcaster_activity_types():
-    # Routine lifecycle and knowledge writes are high-volume but low-signal.
+    # Routine lifecycle, trust-tier bookkeeping, and knowledge writes are
+    # high-volume but low-signal.
     assert classify_broadcaster_event({"type": "lifecycle_created"}) == "activity"
     assert classify_broadcaster_event({"type": "lifecycle_resumed"}) == "activity"
     assert classify_broadcaster_event({"type": "lifecycle_archived"}) == "activity"
+    assert classify_broadcaster_event({"type": "identity_assurance_change"}) == "activity"
     assert classify_broadcaster_event({"type": "knowledge_write"}) == "activity"
 
 
@@ -364,7 +370,6 @@ def test_classify_broadcaster_signal_types():
     assert classify_broadcaster_event({"type": "lifecycle_silent_critical"}) == "signals"
     assert classify_broadcaster_event({"type": "lifecycle_loop_detected"}) == "signals"
     assert classify_broadcaster_event({"type": "identity_drift"}) == "signals"
-    assert classify_broadcaster_event({"type": "identity_assurance_change"}) == "signals"
     assert classify_broadcaster_event({"type": "knowledge_confidence_clamped"}) == "signals"
     assert classify_broadcaster_event({"type": "circuit_breaker_trip"}) == "signals"
     assert classify_broadcaster_event({"type": "circuit_breaker_reset"}) == "signals"

@@ -145,6 +145,14 @@ def broadcaster_event_to_embed(event: dict) -> Optional[discord.Embed]:
         description = event.get("detail") or ""
         if t == "identity_drift":
             colour = discord.Colour.orange()
+        elif t == "identity_assurance_change":
+            old_tier = event.get("old_tier")
+            new_tier = event.get("new_tier")
+            tier_name = event.get("tier_name")
+            if old_tier is not None and new_tier is not None:
+                description = f"Tier {old_tier} -> {new_tier}"
+                if tier_name:
+                    description += f" ({tier_name})"
     elif t.startswith("knowledge_"):
         if t == "knowledge_write":
             dtype = event.get("discovery_type") or "discovery"
@@ -182,6 +190,7 @@ _ACTIVITY_BROADCAST_TYPES = frozenset({
     "lifecycle_created",
     "lifecycle_resumed",
     "lifecycle_archived",
+    "identity_assurance_change",
     "knowledge_write",
 })
 
@@ -189,9 +198,9 @@ _ACTIVITY_BROADCAST_TYPES = frozenset({
 def classify_broadcaster_event(event: dict) -> str:
     """Return ``"activity"`` for routine broadcaster events, ``"signals"`` otherwise.
 
-    Routine = creation/resume/archive lifecycle and knowledge writes. Signals =
-    anything operators would want to read promptly (pauses, drift, identity
-    assurance changes, circuit breaker trips, confidence clamps).
+    Routine = creation/resume/archive lifecycle, trust-tier bookkeeping, and
+    knowledge writes. Signals = anything operators would want to read promptly
+    (pauses, drift, circuit breaker trips, confidence clamps).
     """
     t = event.get("type") or ""
     if t in _ACTIVITY_BROADCAST_TYPES:
