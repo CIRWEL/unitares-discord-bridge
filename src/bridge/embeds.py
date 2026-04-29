@@ -27,6 +27,19 @@ EVENT_TITLES = {
 }
 
 
+def _event_description(event: dict) -> str:
+    return event.get("message") or event.get("description") or ""
+
+
+def _event_agent(event: dict) -> str:
+    agent_id = event.get("agent_id")
+    return (
+        event.get("agent_name")
+        or event.get("agent_label")
+        or (str(agent_id)[:12] if agent_id else "system")
+    )
+
+
 def event_to_embed(event: dict) -> discord.Embed:
     """Convert a governance event dict to a Discord embed."""
     severity = event.get("severity", "info")
@@ -36,10 +49,10 @@ def event_to_embed(event: dict) -> discord.Embed:
 
     embed = discord.Embed(
         title=title,
-        description=event.get("message", ""),
+        description=_event_description(event),
         colour=colour,
     )
-    embed.add_field(name="Agent", value=event.get("agent_name", "unknown"), inline=True)
+    embed.add_field(name="Agent", value=_event_agent(event), inline=True)
     embed.add_field(name="Severity", value=severity, inline=True)
 
     # Type-specific fields

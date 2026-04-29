@@ -111,3 +111,20 @@ def test_classify_rest_event_unknown_defaults_to_signals():
     # remain visible to operators until explicitly reclassified.
     assert classify_rest_event({"type": "new_future_event"}) == "signals"
     assert classify_rest_event({}) == "signals"
+
+
+def test_event_without_agent_name_falls_back_to_id_and_description():
+    event = {
+        "event_id": 28,
+        "type": "coherence_drop",
+        "severity": "high",
+        "agent_id": "fe5975a6-23c7-4e55-9a9d-9c4bdb9b45a7",
+        "description": "Coherence dropped from 0.48 to 0.36 (0.12 change)",
+    }
+
+    embed = event_to_embed(event)
+
+    assert embed.title == "Coherence Drop"
+    assert embed.description == "Coherence dropped from 0.48 to 0.36 (0.12 change)"
+    assert embed.fields[0].name == "Agent"
+    assert embed.fields[0].value == "fe5975a6-23c"
