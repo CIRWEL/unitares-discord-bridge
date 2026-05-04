@@ -27,3 +27,12 @@ DB_PATH = os.environ.get("BRIDGE_DB_PATH", "data/bridge.db")
 CLASS_ROUTING_ENABLED = os.environ.get(
     "BRIDGE_CLASS_ROUTING_ENABLED", ""
 ).lower() in ("1", "true", "yes", "on")
+
+# Operator-managed channel for lease-plane Phase B promotion-eligibility
+# transitions (event_type=lease_plane_phase_b_transition emitted by Sentinel).
+# Empty/0 disables routing — events still flow to the default activity/signals
+# channels via the standard dispatch path. Channel must already exist; the
+# bridge does NOT auto-create it.
+LEASE_PLANE_PHASE_B_CHANNEL_ID = int(
+    os.environ.get("DISCORD_LEASE_PLANE_PHASE_B_CHANNEL_ID", "0") or "0"
+)

@@ -173,6 +173,20 @@ def broadcaster_event_to_embed(event: dict) -> Optional[discord.Embed]:
         title = f"Circuit breaker {action}"
         description = event.get("reason") or ""
         colour = discord.Colour.red() if action == "tripped" else discord.Colour.green()
+    elif t == "lease_plane_phase_b_transition":
+        surface_kind = event.get("surface_kind") or "?"
+        promotable_now = event.get("promotable_now")
+        promotable_before = event.get("promotable_before")
+        if promotable_now is True and promotable_before is not True:
+            title = f"Phase B PROMOTABLE: {surface_kind}"
+            colour = discord.Colour.green()
+        elif promotable_before is True and promotable_now is not True:
+            title = f"Phase B regression: {surface_kind}"
+            colour = discord.Colour.red()
+        else:
+            title = f"Phase B criterion change: {surface_kind}"
+            colour = discord.Colour.blurple()
+        description = event.get("message") or ""
 
     # Discord embed description cap is 4096 chars; be defensive.
     if description and len(description) > 1000:
@@ -266,6 +280,7 @@ class WSEventSubscriber:
         connect_kwargs: Optional[dict] = None,
         class_channels: Optional[dict[str, discord.TextChannel]] = None,
         taxonomy_reverse: Optional[dict] = None,
+        lease_plane_phase_b_channel: Optional[discord.TextChannel] = None,
     ) -> None:
         self.ws_url = ws_url_from_http(governance_url)
         self.activity_channel = activity_channel
@@ -277,6 +292,11 @@ class WSEventSubscriber:
         # None or an empty dict.
         self.class_channels = class_channels or {}
         self.taxonomy_reverse = taxonomy_reverse or {}
+        # Operator-managed channel for lease_plane_phase_b_transition events
+        # emitted by Sentinel after a §6.1 criterion (or overall promotable)
+        # flips status. None disables; events still flow via the default
+        # activity/signals path.
+        self.lease_plane_phase_b_channel = lease_plane_phase_b_channel
         self.reconnect_initial = reconnect_initial
         self.reconnect_max = reconnect_max
         self._connect_kwargs = connect_kwargs or {
@@ -375,6 +395,22 @@ class WSEventSubscriber:
                     self._send_queue.put_nowait((cls_channel, embed))
                 except asyncio.QueueFull:
                     pass
+
+        # Lease-plane Phase B transition mirror: a dedicated channel for the
+        # narrow stream of "criterion N flipped" / "PROMOTABLE" / "REGRESSED"
+        # findings emitted by Sentinel. Low volume (≤5 messages per
+        # surface_kind over the entire pre-promotion lifetime) but high
+        # signal — keep them out of the noisy general feed.
+        if (
+            event.get("type") == "lease_plane_phase_b_transition"
+            and self.lease_plane_phase_b_channel is not None
+        ):
+            try:
+                self._send_queue.put_nowait(
+                    (self.lease_plane_phase_b_channel, embed)
+                )
+            except asyncio.QueueFull:
+                pass
 
     async def _send_loop(self) -> None:
         while not self._stop_event.is_set():
