@@ -387,3 +387,64 @@ def test_send_queue_capacity_absorbs_sentinel_burst():
     # maxsize=100 silently dropped ~170 lifecycle_silent_critical events over
     # 4 days. Keep headroom for ~300 agents firing at once.
     assert _SEND_QUEUE_MAX >= 1000
+
+
+# ---------------------------------------------------------------------------
+# Phase B transition embed rendering
+# ---------------------------------------------------------------------------
+
+
+def test_phase_b_promotable_renders_green_embed():
+    """First flip to PROMOTABLE should render as a green embed with a
+    distinct title operators can grep in a busy channel."""
+    embed = broadcaster_event_to_embed({
+        "type": "lease_plane_phase_b_transition",
+        "agent_name": "Sentinel",
+        "surface_kind": "dialectic",
+        "promotable_now": True,
+        "promotable_before": False,
+        "message": "[lease-plane] dialectic: PROMOTABLE — all §6.1 criteria PASS or N/A",
+    })
+    assert embed is not None
+    assert "PROMOTABLE" in embed.title
+    assert "dialectic" in embed.title
+    assert embed.colour == discord.Colour.green()
+
+
+def test_phase_b_regression_renders_red_embed():
+    """Surface that was promotable but regressed should be visually distinct
+    from a forward transition — caller-confusion costs more than embed-code."""
+    embed = broadcaster_event_to_embed({
+        "type": "lease_plane_phase_b_transition",
+        "surface_kind": "dialectic",
+        "promotable_now": False,
+        "promotable_before": True,
+        "message": "REGRESSED",
+    })
+    assert embed is not None
+    assert "regression" in embed.title.lower() or "REGRESSED" in embed.title
+    assert embed.colour == discord.Colour.red()
+
+
+def test_phase_b_first_observation_baseline_renders_neutral():
+    """Real criterion flips that don't change the overall promotable state
+    render as blurple to distinguish from PROMOTABLE/regression."""
+    embed = broadcaster_event_to_embed({
+        "type": "lease_plane_phase_b_transition",
+        "surface_kind": "file",
+        "promotable_now": False,
+        "promotable_before": False,
+        "message": "[lease-plane] file: §6.1.3 (type_a_conflict_signal): FAIL → PASS",
+    })
+    assert embed is not None
+    assert "criterion change" in embed.title.lower()
+    assert embed.colour == discord.Colour.blurple()
+
+
+def test_phase_b_classified_as_signals():
+    """The event type is signals-bucket — operators should see it without
+    needing to scroll #activity."""
+    assert (
+        classify_broadcaster_event({"type": "lease_plane_phase_b_transition"})
+        == "signals"
+    )

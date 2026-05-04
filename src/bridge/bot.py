@@ -10,7 +10,7 @@ from bridge.config import (
     DISCORD_TOKEN, GUILD_ID, GOVERNANCE_URL, ANIMA_URL,
     GOVERNANCE_TOKEN, ANIMA_TOKEN,
     EVENT_POLL_INTERVAL, HUD_UPDATE_INTERVAL, SENSOR_POLL_INTERVAL, DB_PATH,
-    CLASS_ROUTING_ENABLED,
+    CLASS_ROUTING_ENABLED, LEASE_PLANE_PHASE_B_CHANNEL_ID,
 )
 from bridge.cache import BridgeCache
 from bridge.mcp_client import GovernanceClient, AnimaClient
@@ -134,6 +134,21 @@ async def on_ready():
         # events (lifecycle_*, knowledge_*, etc.) that the REST /api/events
         # path does not surface. Runs in parallel; either can fail without
         # taking the other down.
+        # Operator-managed Phase B transition channel — looked up by ID
+        # (not name) because the operator names it. None when env unset.
+        phase_b_ch: discord.TextChannel | None = None
+        if LEASE_PLANE_PHASE_B_CHANNEL_ID:
+            ch = bot.get_channel(LEASE_PLANE_PHASE_B_CHANNEL_ID)
+            if isinstance(ch, discord.TextChannel):
+                phase_b_ch = ch
+            else:
+                log.warning(
+                    "DISCORD_LEASE_PLANE_PHASE_B_CHANNEL_ID=%d resolved to %r; "
+                    "expected TextChannel — Phase B routing disabled",
+                    LEASE_PLANE_PHASE_B_CHANNEL_ID,
+                    ch,
+                )
+
         ws_subscriber = WSEventSubscriber(
             GOVERNANCE_URL,
             activity_ch,
@@ -141,11 +156,13 @@ async def on_ready():
             alerts_ch,
             class_channels=class_channels,
             taxonomy_reverse=(taxonomy or {}).get("reverse") or {},
+            lease_plane_phase_b_channel=phase_b_ch,
         )
         await ws_subscriber.start()
         log.info(
-            "WS event subscriber started (class routing: %s)",
+            "WS event subscriber started (class routing: %s; phase-B channel: %s)",
             f"{len(class_channels)} classes" if class_channels else "disabled",
+            "configured" if phase_b_ch else "disabled",
         )
 
     # Start the HUD updater if the channel exists
